@@ -92,6 +92,8 @@
     <ClInclude Include="$(ThisDir)\src\Utilities\Macro.h" />
     <ClInclude Include="$(ThisDir)\src\Utilities\Patch.h" />
   </ItemGroup>
-  <Import Project="$(PrivateDir)\SpawnerPrivate.props"
-          Condition="$(Configuration.Contains('Hardened'))"/>
+  <ItemGroup>
+    <None Include="Spawner.props" />
+  </ItemGroup>
+  <Import Project="$(PrivateDir)\SpawnerPrivate.props" Condition="$(Configuration.Contains('Hardened'))" />
 </Project>

@@ -19,10 +19,19 @@
 
 #include "Spawner.h"
 #include <Utilities/Macro.h>
+#include <StringTable.h>
 
 namespace QuickMatch
 {
-	const wchar_t* PlayerString = L"Player";
+	// 使用 StringTable 提供的 TryFetchString 读取 CSF 标签 TXT_QuickMatch，
+	// 找不到或为 MISSING: 前缀时回退到 L"Player"。静态缓存以避免重复查找。
+	inline const wchar_t* GetPlayerString()
+	{
+		static const wchar_t* playerString = nullptr;
+		if (!playerString)
+			playerString = StringTable::TryFetchString("TXT_QuickMatch_PlayerNames", L"Player");
+		return playerString;
+	}
 }
 
 DEFINE_HOOK(0x643AA5, ProgressScreenClass_643720_HideName, 0x8)
@@ -31,7 +40,7 @@ DEFINE_HOOK(0x643AA5, ProgressScreenClass_643720_HideName, 0x8)
 		return 0;
 
 	REF_STACK(wchar_t*, pPlayerName, STACK_OFFSET(0x5C, 8));
-	pPlayerName = const_cast<wchar_t*>(QuickMatch::PlayerString);
+	pPlayerName = const_cast<wchar_t*>(QuickMatch::GetPlayerString());
 
 	return 0;
 }
@@ -41,7 +50,7 @@ DEFINE_HOOK(0x65837A, RadarClass_658330_HideName, 0x6)
 	if ((Spawner::Enabled && Spawner::GetConfig()->QuickMatch) == false)
 		return 0;
 
-	R->ECX(QuickMatch::PlayerString);
+	R->ECX(QuickMatch::GetPlayerString());
 	return 0x65837A + 0x6;
 }
 
@@ -50,7 +59,7 @@ DEFINE_HOOK(0x64B156, ModeLessDialog_64AE50_HideName, 0x9)
 	if ((Spawner::Enabled && Spawner::GetConfig()->QuickMatch) == false)
 		return 0;
 
-	R->EDX(QuickMatch::PlayerString);
+	R->EDX(QuickMatch::GetPlayerString());
 	return 0x64B156 + 0x9;
 }
 
@@ -59,6 +68,6 @@ DEFINE_HOOK(0x648EA8, WaitForPlayers_HideName, 0x6)
 	if ((Spawner::Enabled && Spawner::GetConfig()->QuickMatch) == false)
 		return 0;
 
-	R->EAX(QuickMatch::PlayerString);
+	R->EAX(QuickMatch::GetPlayerString());
 	return 0x648EB3;
 }
