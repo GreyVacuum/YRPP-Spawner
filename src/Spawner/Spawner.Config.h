@@ -141,6 +141,10 @@ public:
 	bool Ra2Mode;
 	bool DisableGameSpeed;
 	bool QuickMatch;
+	bool QuickMatch_ProgressScreen;
+	bool QuickMatch_Diplomacy;
+	bool QuickMatch_InGameDialog;
+	bool QuickMatch_WaitForPlayers;
 	bool SkipScoreScreen;
 	bool WriteStatistics;
 	bool AINamesByDifficulty;
@@ -239,6 +243,10 @@ public:
 		, Ra2Mode { false }
 		, DisableGameSpeed { false }
 		, QuickMatch { false }
+		, QuickMatch_ProgressScreen { false }
+		, QuickMatch_Diplomacy { false }
+		, QuickMatch_InGameDialog { false }
+		, QuickMatch_WaitForPlayers { false }
 		, SkipScoreScreen { Main::GetConfig()->SkipScoreScreen }
 		, WriteStatistics { false }
 		, AINamesByDifficulty { false }
