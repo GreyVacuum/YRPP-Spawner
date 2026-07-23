@@ -112,6 +112,11 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		Ra2Mode                  = pINI->ReadBool(pSettingsSection, "Ra2Mode", Ra2Mode);
 		DisableGameSpeed         = pINI->ReadBool(pSettingsSection, "DisableGameSpeed", DisableGameSpeed);
 		QuickMatch               = pINI->ReadBool(pSettingsSection, "QuickMatch", QuickMatch);
+		// QuickMatch 子选项：未在 INI 中指定时默认继承 QuickMatch 的值
+		QuickMatch_ProgressScreen = pINI->ReadBool(pSettingsSection, "QuickMatch.ProgressScreen", QuickMatch);
+		QuickMatch_Diplomacy      = pINI->ReadBool(pSettingsSection, "QuickMatch.Diplomacy", QuickMatch);
+		QuickMatch_InGameDialog   = pINI->ReadBool(pSettingsSection, "QuickMatch.InGameDialog", QuickMatch);
+		QuickMatch_WaitForPlayers = pINI->ReadBool(pSettingsSection, "QuickMatch.WaitForPlayers", QuickMatch);
 		SkipScoreScreen          = pINI->ReadBool(pSettingsSection, "SkipScoreScreen", SkipScoreScreen);
 		WriteStatistics          = pINI->ReadBool(pSettingsSection, "WriteStatistics", WriteStatistics);
 		AINamesByDifficulty      = pINI->ReadBool(pSettingsSection, "AINamesByDifficulty", AINamesByDifficulty);
