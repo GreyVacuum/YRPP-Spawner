@@ -43,6 +43,10 @@ DEFINE_HOOK(0x6BD7C5, WinMain_SpawnerInit, 0x6)
 			Patch::Apply_CALL(0x68ACFF, Spawner::AssignHouses); // ScenarioClass::Read_INI
 
 			Patch::Apply_LJMP(0x5D74A0, 0x5D7570);   // MPGameModeClass_AllyTeams
+			// MPCooperative::AllyTeams 重写了基类，会覆盖 spawn.ini 的 [MultiX_Alliances] 设置。
+			// 始终跳过原生函数，由 Spawner::AssignHouses 根据
+			// CooperativeAIAutoAlly / CooperativePlayerAutoAlly 分别控制 AI 和人类的自动结盟。
+			Patch::Apply_LJMP(0x5C3220, 0x5D7570);   // MPCooperative_AllyTeams
 			Patch::Apply_LJMP(0x501721, 0x501736);   // HouseClass_ComputerParanoid
 			//Patch::Apply_LJMP(0x686A9E, 0x686AC6); // ReadScenario_InitSomeThings - Moved to a hook to allow conditional toggling of Special house's alliances.
 		}
