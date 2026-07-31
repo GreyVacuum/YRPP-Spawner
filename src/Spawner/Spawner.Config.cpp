@@ -73,6 +73,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		/* ScenarioName */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
 		/* MapHash      */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
 		ReadMissionSection  = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
+		ReadCoopCampSection = pINI->ReadBool(pSettingsSection, "ReadCoopCampSection", ReadCoopCampSection);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIMapName", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
 			MultiByteToWideChar(CP_UTF8, 0, Main::readBuffer, strlen(Main::readBuffer), UIMapName, std::size(UIMapName));

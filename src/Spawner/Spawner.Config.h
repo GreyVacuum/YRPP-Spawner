@@ -115,6 +115,7 @@ public:
 	char MapHash[0xff];
 	wchar_t UIMapName[45];
 	bool ReadMissionSection;
+	bool ReadCoopCampSection;
 
 	// Network Options
 	int Protocol;
@@ -194,6 +195,7 @@ public:
 		, MapHash { "" }
 		, UIMapName { L"" }
 		, ReadMissionSection { false }
+		, ReadCoopCampSection { false }
 
 		// Network Options
 		, Protocol { 2 }
