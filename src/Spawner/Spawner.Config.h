@@ -94,6 +94,7 @@ public:
 	bool MCVRedeploy;
 	wchar_t UIGameMode[60];
 	bool SpecialHouseIsAlly;
+	bool CooperativeDescription;
 
 	// SaveGame Options
 	bool LoadSaveGame;
@@ -172,6 +173,7 @@ public:
 		, MCVRedeploy { true }
 		, UIGameMode { L"" }
 		, SpecialHouseIsAlly { true }
+		, CooperativeDescription { false }
 
 		// SaveGame
 		, LoadSaveGame { false }

@@ -48,6 +48,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		FogOfWar           = pINI->ReadBool(pSettingsSection, "FogOfWar", FogOfWar);
 		MCVRedeploy        = pINI->ReadBool(pSettingsSection, "MCVRedeploy", MCVRedeploy);
 		SpecialHouseIsAlly = pINI->ReadBool(pSettingsSection, "SpecialHouseIsAlly", SpecialHouseIsAlly);
+		CooperativeDescription = pINI->ReadBool(pSettingsSection, "CooperativeDescription", CooperativeDescription);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIGameMode", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
 			MultiByteToWideChar(CP_UTF8, 0, Main::readBuffer, strlen(Main::readBuffer), UIGameMode, std::size(UIGameMode));

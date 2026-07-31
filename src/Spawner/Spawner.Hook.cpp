@@ -58,7 +58,9 @@ DEFINE_HOOK(0x6BD7C5, WinMain_SpawnerInit, 0x6)
 		}
 
 		{ // Cooperative
-			Patch::Apply_LJMP(0x553321, 0x5533C5); // LoadProgressMgr_Draw_CooperativeDescription
+			// Skip drawing the cooperative description unless CooperativeDescription=yes in spawn.ini.
+			if (!Spawner::GetConfig()->CooperativeDescription)
+				Patch::Apply_LJMP(0x553321, 0x5533C5); // LoadProgressMgr_Draw_CooperativeDescription
 			Patch::Apply_LJMP(0x55D0DF, 0x55D0E8); // AuxLoop_Cooperative_EndgameCrashFix
 		}
 
