@@ -170,6 +170,48 @@ void Spawner::AssignHouses()
 		if (pHousesConfig->HandicapDifficulty != -1)
 			pHouse->AssignHandicap(pHousesConfig->HandicapDifficulty);
 	}
+
+	// Cooperative 模式自动结盟
+	// 原生 MPCooperative::AllyTeams 已被 LJMP 跳过，此处根据配置分别实现
+	// AI 和人类的自动结盟，不会覆盖 spawn.ini 的 [MultiX_Alliances] 设置
+	if (SessionClass::Instance.MPGameMode
+		&& SessionClass::Instance.MPGameMode->MapFilter.Contains("cooperative"))
+	{
+		for (int i = 0; i < count; i++)
+		{
+			const auto pHouse1 = HouseClass::Array.GetItem(i);
+			if (pHouse1->Type->MultiplayPassive)
+				continue;
+
+			const auto pConfig1 = &Spawner::Config->Houses[i];
+			if (pHouse1->IsHumanPlayer && pConfig1->IsObserver)
+				continue;
+
+			const bool autoAlly = pHouse1->IsHumanPlayer
+				? Spawner::Config->CooperativePlayerAutoAlly
+				: Spawner::Config->CooperativeAIAutoAlly;
+			if (!autoAlly)
+				continue;
+
+			for (int j = i + 1; j < count; j++)
+			{
+				const auto pHouse2 = HouseClass::Array.GetItem(j);
+				if (pHouse2->Type->MultiplayPassive)
+					continue;
+
+				// 只和同类结盟（AI 和 AI，人类和人类）
+				if (pHouse2->IsHumanPlayer != pHouse1->IsHumanPlayer)
+					continue;
+
+				const auto pConfig2 = &Spawner::Config->Houses[j];
+				if (pHouse2->IsHumanPlayer && pConfig2->IsObserver)
+					continue;
+
+				pHouse1->Allies.Add(pHouse2->ArrayIndex);
+				pHouse2->Allies.Add(pHouse1->ArrayIndex);
+			}
+		}
+	}
 }
 
 bool Spawner::StartScenario(const char* pScenarioName)

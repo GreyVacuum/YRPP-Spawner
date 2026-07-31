@@ -94,6 +94,8 @@ public:
 	bool MCVRedeploy;
 	wchar_t UIGameMode[60];
 	bool SpecialHouseIsAlly;
+	bool CooperativeAIAutoAlly;
+	bool CooperativePlayerAutoAlly;
 
 	// SaveGame Options
 	bool LoadSaveGame;
@@ -176,6 +178,8 @@ public:
 		, MCVRedeploy { true }
 		, UIGameMode { L"" }
 		, SpecialHouseIsAlly { true }
+		, CooperativeAIAutoAlly { false }
+		, CooperativePlayerAutoAlly { false }
 
 		// SaveGame
 		, LoadSaveGame { false }
