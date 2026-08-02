@@ -146,6 +146,7 @@ public:
 	bool AINamesByDifficulty;
 	bool ContinueWithoutHumans;
 	bool DefeatedBecomesObserver;
+	bool NoneEnemySwitchTeamCivilWarMode;
 	bool Observer_ShowAIOnSidebar;
 #ifdef IS_CNCNET_YR_VER
 	bool DisableChat;
@@ -244,6 +245,7 @@ public:
 		, AINamesByDifficulty { false }
 		, ContinueWithoutHumans { false }
 		, DefeatedBecomesObserver { false }
+		, NoneEnemySwitchTeamCivilWarMode { false }
 		, Observer_ShowAIOnSidebar { false }
 #ifdef IS_CNCNET_YR_VER
 		, DisableChat { false }

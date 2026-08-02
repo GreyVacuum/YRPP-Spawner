@@ -137,11 +137,49 @@ DEFINE_HOOK(0x4FC262, HouseClass__MPlayerDefeated_SkipObserver, 0x6)
 
 DEFINE_HOOK(0x4FC551, HouseClass__MPlayerDefeated_NoEnemies, 0x5)
 {
+	// At this point, the original game has already determined that NO enemies remain.
+	// All remaining alive non-passive houses are mutually allied with each other.
 	enum { ProcEpilogue = 0x4FC6BC };
 
 	if (!MPlayerDefeated::pThis)
 		return 0;
 
+	// Count alive non-passive houses (excluding the defeated player)
+	int aliveCount = 0;
+	for (const auto pHouse : HouseClass::Array)
+	{
+		if (!pHouse->Defeated && !pHouse->Type->MultiplayPassive)
+			aliveCount++;
+	}
+
+	// Civil War: when no enemies remain, all remaining allies fight each other
+	if (Spawner::GetConfig()->NoneEnemySwitchTeamCivilWarMode && aliveCount >= 2)
+	{
+		Debug::Log("MPlayer_Defeated() - No enemies left, starting civil war among remaining %d houses\n", aliveCount);
+
+		// Make all remaining alive non-passive houses enemies of each other
+		for (const auto pEnemyA : HouseClass::Array)
+		{
+			if (pEnemyA->Defeated || pEnemyA->Type->MultiplayPassive)
+				continue;
+
+			for (const auto pEnemyB : HouseClass::Array)
+			{
+				if (pEnemyB->Defeated || pEnemyB->Type->MultiplayPassive
+					|| pEnemyB == pEnemyA)
+					continue;
+
+				pEnemyA->MakeEnemy(pEnemyB, false);
+			}
+		}
+
+		if (Spawner::GetConfig()->DefeatedBecomesObserver)
+			MPlayerDefeated::pThis->MakeObserver();
+
+		return ProcEpilogue;
+	}
+
+	// Original behavior: check if the defeated player has a living ally
 	for (const auto pHouse : HouseClass::Array)
 	{
 		if (pHouse->Defeated || pHouse == MPlayerDefeated::pThis || pHouse->Type->MultiplayPassive)
