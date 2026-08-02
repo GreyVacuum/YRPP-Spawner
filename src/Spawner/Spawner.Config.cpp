@@ -118,6 +118,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		ContinueWithoutHumans    = pINI->ReadBool(pSettingsSection, "ContinueWithoutHumans", ContinueWithoutHumans);
 		DefeatedBecomesObserver  = pINI->ReadBool(pSettingsSection, "DefeatedBecomesObserver", DefeatedBecomesObserver);
 		Observer_ShowAIOnSidebar = pINI->ReadBool(pSettingsSection, "Observer.ShowAIOnSidebar", Observer_ShowAIOnSidebar);
+		ShowLoadingProgress     = pINI->ReadBool(pSettingsSection, "ShowLoadingProgress", ShowLoadingProgress);
 #ifdef IS_CNCNET_YR_VER
 		DisableChat              = pINI->ReadBool(pSettingsSection, "DisableChat", DisableChat);
 #endif
