@@ -48,6 +48,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		FogOfWar           = pINI->ReadBool(pSettingsSection, "FogOfWar", FogOfWar);
 		MCVRedeploy        = pINI->ReadBool(pSettingsSection, "MCVRedeploy", MCVRedeploy);
 		SpecialHouseIsAlly = pINI->ReadBool(pSettingsSection, "SpecialHouseIsAlly", SpecialHouseIsAlly);
+		CooperativeDescription = pINI->ReadBool(pSettingsSection, "CooperativeDescription", CooperativeDescription);
 		CooperativeAIAutoAlly = pINI->ReadBool(pSettingsSection, "CooperativeAIAutoAlly", CooperativeAIAutoAlly);
 		CooperativePlayerAutoAlly = pINI->ReadBool(pSettingsSection, "CooperativePlayerAutoAlly", CooperativePlayerAutoAlly);
 
@@ -74,6 +75,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		/* ScenarioName */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
 		/* MapHash      */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
 		ReadMissionSection  = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
+		ReadCoopCampSection = pINI->ReadBool(pSettingsSection, "ReadCoopCampSection", ReadCoopCampSection);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIMapName", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
 			MultiByteToWideChar(CP_UTF8, 0, Main::readBuffer, strlen(Main::readBuffer), UIMapName, std::size(UIMapName));
@@ -114,7 +116,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		Ra2Mode                  = pINI->ReadBool(pSettingsSection, "Ra2Mode", Ra2Mode);
 		DisableGameSpeed         = pINI->ReadBool(pSettingsSection, "DisableGameSpeed", DisableGameSpeed);
 		QuickMatch               = pINI->ReadBool(pSettingsSection, "QuickMatch", QuickMatch);
-		// QuickMatch 子选项：INI 中有该键则使用其值，否则默认继承 QuickMatch 的值
+		// QuickMatch ��ѡ�INI ���иü���ʹ����ֵ������Ĭ�ϼ̳� QuickMatch ��ֵ
 		if (pINI->Exists(pSettingsSection, "QuickMatch.ProgressScreen"))
 			QuickMatch_ProgressScreen = pINI->ReadBool(pSettingsSection, "QuickMatch.ProgressScreen", QuickMatch_ProgressScreen);
 		else

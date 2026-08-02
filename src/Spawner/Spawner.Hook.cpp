@@ -43,9 +43,9 @@ DEFINE_HOOK(0x6BD7C5, WinMain_SpawnerInit, 0x6)
 			Patch::Apply_CALL(0x68ACFF, Spawner::AssignHouses); // ScenarioClass::Read_INI
 
 			Patch::Apply_LJMP(0x5D74A0, 0x5D7570);   // MPGameModeClass_AllyTeams
-			// MPCooperative::AllyTeams 重写了基类，会覆盖 spawn.ini 的 [MultiX_Alliances] 设置。
-			// 始终跳过原生函数，由 Spawner::AssignHouses 根据
-			// CooperativeAIAutoAlly / CooperativePlayerAutoAlly 分别控制 AI 和人类的自动结盟。
+			// MPCooperative::AllyTeams ��д�˻��࣬�Ḳ�� spawn.ini �� [MultiX_Alliances] ���á�
+			// ʼ������ԭ���������� Spawner::AssignHouses ����
+			// CooperativeAIAutoAlly / CooperativePlayerAutoAlly �ֱ���� AI ��������Զ����ˡ�
 			Patch::Apply_LJMP(0x5C3220, 0x5D7570);   // MPCooperative_AllyTeams
 			Patch::Apply_LJMP(0x501721, 0x501736);   // HouseClass_ComputerParanoid
 			//Patch::Apply_LJMP(0x686A9E, 0x686AC6); // ReadScenario_InitSomeThings - Moved to a hook to allow conditional toggling of Special house's alliances.
@@ -62,7 +62,9 @@ DEFINE_HOOK(0x6BD7C5, WinMain_SpawnerInit, 0x6)
 		}
 
 		{ // Cooperative
-			Patch::Apply_LJMP(0x553321, 0x5533C5); // LoadProgressMgr_Draw_CooperativeDescription
+			// Skip drawing the cooperative description unless CooperativeDescription=yes in spawn.ini.
+			if (!Spawner::GetConfig()->CooperativeDescription)
+				Patch::Apply_LJMP(0x553321, 0x5533C5); // LoadProgressMgr_Draw_CooperativeDescription
 			Patch::Apply_LJMP(0x55D0DF, 0x55D0E8); // AuxLoop_Cooperative_EndgameCrashFix
 		}
 
@@ -291,6 +293,62 @@ DEFINE_HOOK(0x65F57F, BriefingDialog_MissionININame, 0x6)
 	{
 		pFile->SetFileName("SPAWN.INI");
 		return 0x65F58F;
+	}
+
+	return 0;
+}
+
+// ============================================================================
+// Redirect CoopCampMD.ini to SPAWN.INI when ReadCoopCampSection=yes
+// ============================================================================
+// Same approach as ReadMissionSection: after the CCFileClass constructor
+// (sub_4739F0) returns, use LEA_STACK with STACK_OFFSET to get the constructed
+// object and call SetFileName("SPAWN.INI") to override the filename.
+// ============================================================================
+
+// Call site 1: CoopCampaignClass::Read_INI (sub_49DB00)
+// 0x49DB13: call sub_4739F0        (5 bytes)
+// 0x49DB18: xor ebx, ebx           (2 bytes) <-- hook here
+// 0x49DB1A: lea eax, [esp+50h]     (4 bytes)
+DEFINE_HOOK(0x49DB18, CoopCampaign_ReadINI_CoopCampININame, 0x6)
+{
+	LEA_STACK(CCFileClass*, pFile, STACK_OFFSET(0x13C, -0xEC));
+
+	if (Spawner::GetConfig()->ReadCoopCampSection)
+	{
+		pFile->SetFileName("SPAWN.INI");
+	}
+
+	return 0;
+}
+
+// Call site 2: sub_679CC0 (CoopCampaign count initializer)
+// 0x679D1C: call sub_4739F0        (5 bytes)
+// 0x679D21: lea eax, [esp+5Ch]     (4 bytes) <-- hook here
+// 0x679D25: lea ecx, [esp+4]       (4 bytes)
+DEFINE_HOOK(0x679D21, CoopCampCountInit_CoopCampININame, 0x8)
+{
+	LEA_STACK(CCFileClass*, pFile, STACK_OFFSET(0xC8, -0x6C));
+
+	if (Spawner::GetConfig()->ReadCoopCampSection)
+	{
+		pFile->SetFileName("SPAWN.INI");
+	}
+
+	return 0;
+}
+
+// Call site 3: sub_679D90 (CoopCampaign total count)
+// 0x679E2B: call sub_4739F0        (5 bytes)
+// 0x679E30: lea eax, [esp+68h]     (4 bytes) <-- hook here
+// 0x679E34: lea ecx, [esp+10h]     (4 bytes)
+DEFINE_HOOK(0x679E30, CoopCampTotalCount_CoopCampININame, 0x8)
+{
+	LEA_STACK(CCFileClass*, pFile, STACK_OFFSET(0xD4, -0x6C));
+
+	if (Spawner::GetConfig()->ReadCoopCampSection)
+	{
+		pFile->SetFileName("SPAWN.INI");
 	}
 
 	return 0;

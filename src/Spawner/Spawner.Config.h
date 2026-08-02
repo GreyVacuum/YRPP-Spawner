@@ -94,6 +94,7 @@ public:
 	bool MCVRedeploy;
 	wchar_t UIGameMode[60];
 	bool SpecialHouseIsAlly;
+	bool CooperativeDescription;
 	bool CooperativeAIAutoAlly;
 	bool CooperativePlayerAutoAlly;
 
@@ -116,6 +117,7 @@ public:
 	char MapHash[0xff];
 	wchar_t UIMapName[45];
 	bool ReadMissionSection;
+	bool ReadCoopCampSection;
 
 	// Network Options
 	int Protocol;
@@ -178,6 +180,7 @@ public:
 		, MCVRedeploy { true }
 		, UIGameMode { L"" }
 		, SpecialHouseIsAlly { true }
+		, CooperativeDescription { false }
 		, CooperativeAIAutoAlly { false }
 		, CooperativePlayerAutoAlly { false }
 
@@ -200,6 +203,7 @@ public:
 		, MapHash { "" }
 		, UIMapName { L"" }
 		, ReadMissionSection { false }
+		, ReadCoopCampSection { false }
 
 		// Network Options
 		, Protocol { 2 }
