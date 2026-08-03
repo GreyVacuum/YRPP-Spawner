@@ -7,16 +7,16 @@
 #define _STR_(x) #x
 
 // Build number. Incremented on each released build
-#define BUILD_NUMBER 16
+#define BUILD_NUMBER 2026/08/03
 
 // Indicates project maturity and completeness
-#define VERSION_MAJOR 0
+#define VERSION_MAJOR 1
 // Indicates major changes and significant additions, like new logics
 #define VERSION_MINOR 0
 // Indicates minor changes, like vanilla bugfixes, unhardcodings or hacks
 #define VERSION_REVISION 0
 // Indicates YRpp-Spawner-related bugfixes only
-#define VERSION_PATCH 16
+#define VERSION_PATCH 0
 
 #if defined(IS_CNCNET_YR_VER) && defined(IS_HARDENED_VER)
 	#define PRODUCT_TYPE "(CnCNet YR, hardened)"
@@ -25,7 +25,7 @@
 #elif defined(IS_HARDENED_VER)
 	#define PRODUCT_TYPE "(hardened)"
 #else
-	#define PRODUCT_TYPE "(regular)"
+	#define PRODUCT_TYPE "(Custom)"
 #endif
 
 #define PRODUCT_NAME "YRpp Spawner " PRODUCT_TYPE
@@ -36,7 +36,7 @@
 #ifdef IS_RELEASE_VER // Release build metadata
 	#define FILE_VERSION_STR _STR(VERSION_MAJOR) "." _STR(VERSION_MINOR) "." _STR(VERSION_REVISION) "." _STR(VERSION_PATCH)
 	#define FILE_VERSION VERSION_MAJOR, VERSION_MINOR, VERSION_REVISION, VERSION_PATCH
-	#define PRODUCT_VERSION "Release Build " FILE_VERSION_STR
+	#define PRODUCT_VERSION "GreyVacuum Release Build " FILE_VERSION_STR
 #elif defined(GIT_COMMIT) // Nightly devbuild metadata
 	#define STR_GIT_COMMIT _STR(GIT_COMMIT)
 	#define STR_GIT_BRANCH _STR(GIT_BRANCH)
