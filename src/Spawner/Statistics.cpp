@@ -20,6 +20,7 @@
 #include "Spawner.h"
 
 #include <CCFileClass.h>
+#include <FPSCounter.h>
 #include <HouseClass.h>
 #include <PacketClass.h>
 #include <ScenarioClass.h>
@@ -28,11 +29,84 @@
 #include <Utilities/Debug.h>
 #include <Utilities/Macro.h>
 
+
+// MAX_MULTI_GAMES index used by the single-result MP score screen.
+// The array supports multi-game (tournament) accumulation, but in RA2/YR's
+// standard non-tournament MPScore dialog sub_5C98A0 only writes slot 0.
+static constexpr int ScoreGameSlot = 0;
+
 bool __forceinline IsStatisticsEnabled()
 {
 	return Spawner::Active
 		&& Spawner::GetConfig()->WriteStatistics
 		&& !SessionClass::IsCampaign();
+}
+
+static void WriteDTALog()
+{
+	if (!Spawner::Active)
+		return;
+
+	if (!Spawner::GetConfig()->GenerateStatistics)
+		return;
+
+	CreateDirectoryA("debug", nullptr);
+
+	CCFileClass file = CCFileClass("debug\\Statistic.log");
+	if (!file.Open(FileAccessMode::Write))
+		return;
+
+	// Read from the SessionClass::MPScores array populated by sub_5C98A0, the
+	// same data source as the in-game score screen. The array is filled after
+	// MPScore_InitDialog (0x5C9D42) calls sub_5C98A0.
+	const int count = SessionClass::MPScoreCount;
+
+	// Walk HouseClass::Array in the same order as sub_5C98A0 to map each
+	// MPScores entry back to its HouseClass, so we can tell human players
+	// from AI players. AI players are always named "Computer" regardless of
+	// the localised UIName the game copies into the score array.
+	int scoreIndex = 0;
+
+	for (auto pHouse : HouseClass::Array)
+	{
+		// Same filter as sub_5C98A0: skip null, passive, and observer houses.
+		if (!pHouse
+			|| (pHouse->Type && pHouse->Type->MultiplayPassive)
+			|| pHouse->IsObserver())
+			continue;
+
+		if (scoreIndex >= count)
+			break;
+
+		const auto& entry = SessionClass::MPScores[scoreIndex];
+
+		const wchar_t* display_name = pHouse->IsHumanPlayer
+			? entry.Name : L"Computer";
+
+		char name[64] = { 0 };
+		WideCharToMultiByte(CP_UTF8, 0, display_name, -1, name, sizeof(name), nullptr, nullptr);
+
+		const char* result = entry.Wins ? "Winner" : "Loser";
+
+		const int lost  = entry.Lost[ScoreGameSlot];
+		const int kills = entry.Kills[ScoreGameSlot];
+		const int built = entry.Built[ScoreGameSlot];
+		const int score = entry.Score[ScoreGameSlot];
+
+		char buffer[256] = { 0 };
+		sprintf_s(buffer, "%s: %s\n Lost = %d\n Kills = %d\n Built = %d\n Score = %d\n",
+			name, result, lost, kills, built, score);
+		file.WriteBytes(buffer, static_cast<int>(strlen(buffer)));
+
+		++scoreIndex;
+	}
+
+	char fpsBuffer[128] = { 0 };
+	sprintf_s(fpsBuffer, "Game loop finished. Average FPS = %d\n",
+		static_cast<int>(FPSCounter::GetAverageFrameRate()));
+	file.WriteBytes(fpsBuffer, static_cast<int>(strlen(fpsBuffer)));
+
+	file.Close();
 }
 
 // Write stats.dmp
@@ -56,6 +130,15 @@ DEFINE_HOOK(0x6C856C, SendStatisticsPacket_WriteStatisticsDump, 0x5)
 		return 0x6C87B8;
 	}
 
+	return 0;
+}
+
+DEFINE_HOOK(0x5C9D47, MPScore_InitDialog_WriteDTALog, 0x6)
+{
+	// sub_5C98A0 has just finished (called at 0x5C9D42), so the global
+	// statistics array is now populated with the exact same Score shown
+	// in-game (including the if(>0) filter and the winner bonus).
+	WriteDTALog();
 	return 0;
 }
 

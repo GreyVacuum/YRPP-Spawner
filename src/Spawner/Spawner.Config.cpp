@@ -135,6 +135,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 			QuickMatch_WaitForPlayers = QuickMatch;
 		SkipScoreScreen          = pINI->ReadBool(pSettingsSection, "SkipScoreScreen", SkipScoreScreen);
 		WriteStatistics          = pINI->ReadBool(pSettingsSection, "WriteStatistics", WriteStatistics);
+		GenerateStatistics       = pINI->ReadBool(pSettingsSection, "GenerateStatistics", GenerateStatistics);
 		AINamesByDifficulty      = pINI->ReadBool(pSettingsSection, "AINamesByDifficulty", AINamesByDifficulty);
 		ContinueWithoutHumans    = pINI->ReadBool(pSettingsSection, "ContinueWithoutHumans", ContinueWithoutHumans);
 		DefeatedBecomesObserver  = pINI->ReadBool(pSettingsSection, "DefeatedBecomesObserver", DefeatedBecomesObserver);

@@ -151,6 +151,7 @@ public:
 	bool QuickMatch_WaitForPlayers;
 	bool SkipScoreScreen;
 	bool WriteStatistics;
+	bool GenerateStatistics;
 	bool AINamesByDifficulty;
 	bool ContinueWithoutHumans;
 	bool DefeatedBecomesObserver;
@@ -259,6 +260,7 @@ public:
 		, QuickMatch_WaitForPlayers { false }
 		, SkipScoreScreen { Main::GetConfig()->SkipScoreScreen }
 		, WriteStatistics { false }
+		, GenerateStatistics { true }
 		, AINamesByDifficulty { false }
 		, ContinueWithoutHumans { false }
 		, DefeatedBecomesObserver { false }
