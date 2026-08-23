@@ -535,12 +535,20 @@ DEFINE_HOOK(0x643AD1, ProgressScreen_Draw_LoadingPercentage_Text, 0x7)
 		// Get the wchar_t* player name from the stack (lParam at ESP+0x64)
 		GET_STACK(wchar_t*, playerName, STACK_OFFSET(0x5C, 0x8));
 
-		// Format "Name [XX]" using CSF label for customizability
-		// Default format: "%s [%d]" where %s=name, %d=percentage
-		// Users can override via CSF: Name:LoadProgress=%s: %d%%
+		// Format "Name [XX" (name + number, no closing bracket).
 		static wchar_t nameBuf[64];
-		const wchar_t* format = StringTable::TryFetchString("TXT_LoadProgressFormat", L"%s [%d]");
+		const wchar_t* format = StringTable::TryFetchString("TXT_LoadProgressFormat", L"%s [%d");
 		swprintf_s(nameBuf, format, playerName ? playerName : L"?", percentage);
+
+		// '%' is a special character to the text system (just like the %s / %d
+		// format specifiers). A lone '%' gets swallowed when the string is
+		// drawn, so we emit "%%" - the standard escape - which the renderer
+		// collapses to a single literal '%'. Strip any trailing ']' the
+		// CSF/format may have added, then close the bracket.
+		size_t len = wcslen(nameBuf);
+		if (len > 0 && nameBuf[len - 1] == L']')
+			nameBuf[--len] = L'\0';
+		wcscat_s(nameBuf, L"%%]");
 
 		// Draw the combined text using Fancy_Text_Print_Wide (YRpp method)
 		// at the same position where the original name would be drawn
