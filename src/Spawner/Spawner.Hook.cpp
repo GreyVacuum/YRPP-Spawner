@@ -21,6 +21,7 @@
 #include "NetHack.h"
 
 #include <HouseClass.h>
+#include <ColorScheme.h>
 #include <SessionClass.h>
 #include <BeaconManagerClass.h>
 #include <Utilities/Debug.h>
@@ -345,6 +346,38 @@ DEFINE_HOOK(0x643C2F, ProgressScreen_Draw_LoadingPercentage_Loop, 0x6)
 //   0x643AD5: add esp, 4Ch (3)  - cleanup local variables
 //   After: 0x643AD8: retn 14h
 // ============================================================================
+
+// ----------------------------------------------------------------------------
+// Per-player name color for the loading-progress percentage text.
+//
+// The original loader does NOT use HouseClass::Color or ColorScheme fields
+// for the loading-screen names - those are 0 / invalid for the lightweight
+// loading-screen houses. Instead, the per-player color context object
+// (_SovietLoad_, a parameter of sub_643720) carries a 3-byte HSL triple at
+// offset +0x308. sub_4A61C0 (called by sub_643670 to draw each name) feeds
+// (_SovietLoad_ + 0x308) into sub_517440 (HSL -> RGB), then re-packs the
+// RGB through six global shift tables (dword_8A0D*) into the final COLORREF.
+//
+// To make the percentage text match the name EXACTLY, we replicate that
+// pipeline: read _SovietLoad_ off the stack, call sub_517440 the same way
+// the game does (__thiscall, ecx = HSL source), and apply the same shift
+// tables. This is the original name color, not an approximation.
+// ----------------------------------------------------------------------------
+
+// sub_517440(this = HSL source ptr, a2 = RGB output ptr) - __thiscall.
+// The HSL source is 3 bytes (H,S,L); a2 receives 3 bytes of RGB.
+typedef void(__thiscall* Sub517440_t)(void* hslSource, BYTE* outRGB);
+static const Sub517440_t Sub517440 = (Sub517440_t)0x517440;
+
+// The global shift tables used by sub_4A61C0 to pack RGB into a COLORREF.
+// (shr amounts are read as a byte; shl amounts as a dword.)
+DEFINE_REFERENCE(BYTE, ShiftR_shr, 0x8A0DD4);
+DEFINE_REFERENCE(DWORD, ShiftR_shl, 0x8A0DD0);
+DEFINE_REFERENCE(BYTE, ShiftG_shr, 0x8A0DDC);
+DEFINE_REFERENCE(DWORD, ShiftG_shl, 0x8A0DD8);
+DEFINE_REFERENCE(BYTE, ShiftB_shr, 0x8A0DE4);
+DEFINE_REFERENCE(DWORD, ShiftB_shl, 0x8A0DE0);
+
 DEFINE_HOOK(0x643AD1, ProgressScreen_Draw_LoadingPercentage_Text, 0x7)
 {
 	// Render percentage if enabled
@@ -374,31 +407,76 @@ DEFINE_HOOK(0x643AD1, ProgressScreen_Draw_LoadingPercentage_Text, 0x7)
 		// Get the wchar_t* player name from the stack (lParam at ESP+0x64)
 		GET_STACK(wchar_t*, playerName, STACK_OFFSET(0x5C, 0x8));
 
-		// Format "Name [XX" (name + number, no closing bracket).
+		// Format "Name NN%" (name + space + 3-wide number + literal '%').
+		// The square brackets are intentionally removed per the user's
+		// request - only the brackets go, the '%' stays. %3d right-aligns
+		// the percentage in a 3-column field ("  7", " 42", "100"). The
+		// trailing '%' is a special character to the text system (just like
+		// %s / %d): a lone '%' gets swallowed when the string is drawn, so we
+		// emit "%%" - the standard escape - which the renderer collapses to a
+		// single literal '%'. The visual is still CSF-configurable via
+		// TXT_LoadProgressFormat (default shown below); we only append the
+		// escaped '%' after formatting (no bracket).
 		static wchar_t nameBuf[64];
-		const wchar_t* format = StringTable::TryFetchString("TXT_LoadProgressFormat", L"%s [%d");
+		const wchar_t* format = StringTable::TryFetchString("TXT_LoadProgressFormat", L"%s %3d");
 		swprintf_s(nameBuf, format, playerName ? playerName : L"?", percentage);
 
-		// '%' is a special character to the text system (just like the %s / %d
-		// format specifiers). A lone '%' gets swallowed when the string is
-		// drawn, so we emit "%%" - the standard escape - which the renderer
-		// collapses to a single literal '%'. Strip any trailing ']' the
-		// CSF/format may have added, then close the bracket.
-		size_t len = wcslen(nameBuf);
-		if (len > 0 && nameBuf[len - 1] == L']')
-			nameBuf[--len] = L'\0';
-		wcscat_s(nameBuf, L"%%]");
+		// Append a single literal '%' (escaped as "%%" so the renderer does
+		// not swallow it). No closing bracket - brackets were removed.
+		wcscat_s(nameBuf, L"%%");
 
 		// Draw the combined text using Fancy_Text_Print_Wide (YRpp method)
-		// at the same position where the original name would be drawn
+		// at the same position where the original name would be drawn.
+		// Foreground color is taken from THIS player's HouseClass (see
+		// declarations above) so the percentage text is colored exactly like
+		// the name - i.e. the player's own selected color, not a hardcoded
+		// value. Falls back to white only if the house / color is missing.
 		if (DSurface::Hidden != nullptr && a4 != nullptr)
 		{
+			// Safe default; used only if the per-player color cannot be
+			// resolved through the original loader's color pipeline.
+			DWORD foreColor = 0xFFFFFF;
+
+			// _SovietLoad_ is sub_643720's color-context parameter. The
+			// original loader draws each name from the HSL triple at
+			// (_SovietLoad_ + 0x308); we resolve the identical color so the
+			// percentage text matches the name exactly.
+			// sub_643720 is __thiscall (this in ecx), so its first stack argument
+			// _SovietLoad_ lives at entry ESP+4. Inside the function frame the hook
+			// runs with ESP == 0x5C below entry, so the arg is at hook-ESP + 0x60,
+			// i.e. STACK_OFFSET(0x5C, 4). (STACK_OFFSET just adds the two offsets.)
+			GET_STACK(int, sovietLoad, STACK_OFFSET(0x5C, 4));
+			if (sovietLoad)
+			{
+				// sub_517440 is __thiscall: the HSL source goes in ecx, the
+				// 3-byte RGB output buffer is the (single) stack argument.
+				// This is the exact call the game makes inside sub_4A61C0.
+				BYTE* hsl = reinterpret_cast<BYTE*>(sovietLoad) + 0x308;
+				BYTE rgb[4] = { 0 };
+				Sub517440(hsl, rgb);
+
+				// Re-pack through the SAME global shift tables sub_4A61C0 uses,
+				// replicating its exact byte->channel mapping. Verified against the
+				// disassembly of sub_4A61C0 (0x4A61C0): sub_517440's 3-byte HSL->RGB
+				// output is consumed as
+				//   R = out[0]  (>> dword_8A0DD4 << dword_8A0DD0)
+				//   G = out[2]  (>> dword_8A0DDC << dword_8A0DD8)
+				//   B = out[1]  (>> dword_8A0DE4 << dword_8A0DE0)
+				// The game reads G from byte[2] and B from byte[1] - NOT the naive
+				// 0,1,2 order. Swapping these is what makes the color match the
+				// player name exactly.
+				DWORD r = ((rgb[0] & 0xFF) >> ShiftR_shr) << ShiftR_shl;
+				DWORD g = ((rgb[2] & 0xFF) >> ShiftG_shr) << ShiftG_shl;
+				DWORD b = ((rgb[1] & 0xFF) >> ShiftB_shr) << ShiftB_shl;
+				foreColor = r | g | b;
+			}
+
 			// Use textX (v35 at ESP+0x24) where the name starts
 			GET_STACK(int, textX, STACK_OFFSET(0x5C, 0x24 - 0x5C));
 			Point2D location = { textX, textY };
 			RectangleStruct bounds = { 0, 0, 800, 600 };
 			Point2D tmp = { 0, 0 };
-			Fancy_Text_Print_Wide(tmp, nameBuf, DSurface::Hidden, bounds, location, 0xFFFFFF, 0, TextPrintType::NoShadow);
+			Fancy_Text_Print_Wide(tmp, nameBuf, DSurface::Hidden, bounds, location, foreColor, 0, TextPrintType::NoShadow);
 		}
 	}
 
