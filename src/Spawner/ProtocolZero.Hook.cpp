@@ -26,9 +26,19 @@
 #include <Utilities/Debug.h>
 #include <Unsorted.h>
 #include <EventClass.h>
+#include <SessionClass.h>
 
 DEFINE_HOOK(0x55DDA0, MainLoop_AfterRender__ProtocolZero, 0x5)
 {
+	// Enforce the spawner [Settings] frame-rate preset on EVERY frame. The
+	// engine recomputes Game::Network::PreCalcFrameRate / RequestedFPS (back to
+	// 60) when the scenario starts, so a one-shot set in InitNetwork is
+	// overwritten at match start. Re-applying here each frame keeps the preset
+	// for the whole game and re-pushes the cnc-ddraw renderer present cap in
+	// case it was reset. Presets: Skirmish -1 (uncapped), Multiplayer -2 (60).
+	if (auto pCfg = Spawner::GetConfig())
+		Spawner::ApplyMaxFPS(Spawner::GetEffectiveMaxFPS());
+
 	if (ProtocolZero::Enable)
 		ProtocolZero::SendResponseTime2();
 

@@ -90,6 +90,17 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		PreCalcMaxAhead  = pINI->ReadInteger(pSettingsSection, "PreCalcMaxAhead", PreCalcMaxAhead);
 		MaxLatencyLevel  = (byte)pINI->ReadInteger(pSettingsSection, "MaxLatencyLevel", (int)MaxLatencyLevel);
 		ForceMultiplayer = pINI->ReadBool(pSettingsSection, "ForceMultiplayer", ForceMultiplayer);
+		MultiplayerMaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.MaxFPS", MultiplayerMaxFPS);
+		// Protocol sub-keys inherit Multiplayer.MaxFPS when absent, same pattern
+		// as the QuickMatch.* sub-keys above.
+		if (pINI->Exists(pSettingsSection, "Multiplayer.Protocol0.MaxFPS"))
+			MultiplayerProtocol0MaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.Protocol0.MaxFPS", MultiplayerMaxFPS);
+		else
+			MultiplayerProtocol0MaxFPS = MultiplayerMaxFPS;
+		if (pINI->Exists(pSettingsSection, "Multiplayer.Protocol2.MaxFPS"))
+			MultiplayerProtocol2MaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.Protocol2.MaxFPS", MultiplayerMaxFPS);
+		else
+			MultiplayerProtocol2MaxFPS = MultiplayerMaxFPS;
 	}
 
 	{ // Tunnel Options

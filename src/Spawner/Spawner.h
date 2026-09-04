@@ -40,6 +40,20 @@ public:
 		return Config.get();
 	}
 
+	// Resolves the effective frame-rate cap preset for the current session by
+	// game mode: Multiplayer.Protocol0.MaxFPS or Multiplayer.Protocol2.MaxFPS
+	// (inheriting Multiplayer.MaxFPS when absent) for network sessions, -1
+	// (uncapped) for everything else. There is no skirmish key: the engine
+	// frame pacer only throttles network sessions, so single-player is always
+	// left at its native (uncapped) rate.
+	static int GetEffectiveMaxFPS();
+
+	// Applies a MaxFPS preset to the engine frame-rate globals and to the
+	// cnc-ddraw.dll renderer present cap. Preset semantics: -1 (or 0) =
+	// uncapped, -2 = 60, N>0 = cap N. Intentionally does NOT log, because the
+	// per-frame hook at 0x55DDA0 calls it every frame.
+	static void ApplyMaxFPS(int maxFPS);
+
 	static void Init();
 	static bool StartGame();
 	static void AssignHouses();
