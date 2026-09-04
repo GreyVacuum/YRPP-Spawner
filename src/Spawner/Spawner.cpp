@@ -386,6 +386,70 @@ bool Spawner::LoadSavedGame(const char* saveGameName)
 	return true;
 }
 
+int Spawner::GetEffectiveMaxFPS()
+{
+	const auto pCfg = Spawner::GetConfig();
+	if (!pCfg)
+		return -1; // uncapped
+
+	// Multiplayer (LAN / Internet): protocol 0 and protocol 2 each use their own
+	// key, which already collapsed to Multiplayer.MaxFPS at parse time when the
+	// sub-key was absent (see LoadFromINIFile). Default -2 (60) reproduces the
+	// native protocol-2 behavior; -1 unlocks, fully effective under protocol 0
+	// where the engine network pacer is bypassed.
+	if (SessionClass::IsMultiplayer())
+		return ProtocolZero::Enable
+			? pCfg->MultiplayerProtocol0MaxFPS
+			: pCfg->MultiplayerProtocol2MaxFPS;
+
+	// Campaign / skirmish / other single-player: natively uncapped, and the
+	// engine frame pacer does not throttle single-player (IDA-verified), so
+	// return -1 and never touch the frame rate there.
+	return -1;
+}
+
+void Spawner::ApplyMaxFPS(int maxFPS)
+{
+	// Preset -> concrete targets:
+	//   -1 (uncapped) / 0 (legacy alias): engine target 1000, cnc-ddraw
+	//      TargetFPS = 0 ("present every frame").
+	//   -2 (60) and any other non-positive fallback: engine target 60.
+	//   N > 0: explicit cap N.
+	int engineTarget;
+	DWORD ddrawTarget;
+
+	if (maxFPS == -1 || maxFPS == 0)
+	{
+		engineTarget = 1000;
+		ddrawTarget  = 0;
+	}
+	else if (maxFPS > 0)
+	{
+		engineTarget = maxFPS;
+		ddrawTarget  = (DWORD)maxFPS;
+	}
+	else
+	{
+		engineTarget = 60;
+		ddrawTarget  = 60;
+	}
+
+	Game::Network::PreCalcFrameRate = engineTarget;
+	Game::Network::RequestedFPS     = engineTarget;
+
+	// Drive the 3rd-party cnc-ddraw.dll renderer present cap directly.
+	if (HMODULE hDDraw = GetModuleHandleA("ddraw.dll"))
+	{
+		if (LPDWORD pTargetFPS = (LPDWORD)GetProcAddress(hDDraw, "TargetFPS"))
+			*pTargetFPS = ddrawTarget;
+	}
+	else if (HMODULE hDDraw = LoadLibraryA("ddraw.dll"))
+	{
+		if (LPDWORD pTargetFPS = (LPDWORD)GetProcAddress(hDDraw, "TargetFPS"))
+			*pTargetFPS = ddrawTarget;
+	}
+}
+
 void Spawner::InitNetwork()
 {
 	const auto pSpawnerConfig = Spawner::GetConfig();
@@ -436,6 +500,15 @@ void Spawner::InitNetwork()
 	Game::Network::ProtocolVersion  = 2;
 	Game::Network::LatencyFudge     = 0;
 	Game::Network::RequestedFPS     = 60;
+
+	// Frame-rate cap control (spawner [Settings] presets).
+	// Resolve the per-mode preset and apply it once up front. The per-frame
+	// hook at 0x55DDA0 re-applies the same preset every frame because the
+	// engine resets Game::Network::PreCalcFrameRate / RequestedFPS (back to
+	// 60) when the scenario starts, overwriting any one-shot set made here.
+	const int effectiveFPS = Spawner::GetEffectiveMaxFPS();
+	Spawner::ApplyMaxFPS(effectiveFPS);
+	Debug::Log("Spawner: MaxFPS preset=%d enforced every frame (-1=uncapped, -2=60, N>0=cap)\n", effectiveFPS);
 	Game::Network::Tournament       = pSpawnerConfig->Tournament;
 	Game::Network::WOLGameID        = pSpawnerConfig->WOLGameID;
 	Game::Network::ReconnectTimeout = pSpawnerConfig->ReconnectTimeout;

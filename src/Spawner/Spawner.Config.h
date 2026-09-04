@@ -125,6 +125,24 @@ public:
 	byte MaxLatencyLevel;
 	bool ForceMultiplayer;
 
+	// Frame-rate cap presets, per mode (spawner [Settings]).
+	// Value semantics (user-finalized, 2026-09-04):
+	//   -1 = uncapped / infinite: engine frame target driven high and cnc-ddraw
+	//        TargetFPS = 0 ("present every frame").
+	//   -2 = 60: classic online cap, engine target and cnc-ddraw TargetFPS = 60.
+	//    0 = fps0: uncapped too, same as -1 (matches cnc-ddraw TargetFPS = 0).
+	//   N>0 = explicit cap N.
+	// Keys (user-finalized). Only multiplayer is controllable: the engine frame
+	// pacer only throttles network sessions (RequestedFPS/0xA8B558 budget is
+	// gated off in single-player, verified via IDA), so there is no
+	// Skirmish.MaxFPS key - skirmish/campaign keep their native uncapped rate.
+	//   Multiplayer.MaxFPS            = -2 (protocol 2 network pacer = 60)
+	//   Multiplayer.Protocol0.MaxFPS  = inherits Multiplayer.MaxFPS when absent
+	//   Multiplayer.Protocol2.MaxFPS  = inherits Multiplayer.MaxFPS when absent
+	int MultiplayerMaxFPS;
+	int MultiplayerProtocol0MaxFPS;
+	int MultiplayerProtocol2MaxFPS;
+
 	// Tunnel Options
 	int  TunnelId;
 	char TunnelIp[0x20];
@@ -202,6 +220,10 @@ public:
 		, PreCalcMaxAhead { 0 }
 		, MaxLatencyLevel { 0xFF }
 		, ForceMultiplayer { false }
+
+		, MultiplayerMaxFPS { -2 } // 60 (native protocol 2 online behavior)
+		, MultiplayerProtocol0MaxFPS { -2 } // 60; overwritten to inherit Multiplayer.MaxFPS in LoadFromINIFile when key absent
+		, MultiplayerProtocol2MaxFPS { -2 }
 
 		// Tunnel Options
 		, TunnelId { 0 }
