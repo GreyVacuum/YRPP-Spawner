@@ -22,6 +22,7 @@
 
 #include <HouseClass.h>
 #include <MessageListClass.h>
+#include <StringTable.h>
 #include <Utilities/Debug.h>
 #include <Unsorted.h>
 
@@ -77,22 +78,23 @@ int LatencyLevel::GetMaxAhead(LatencyLevelEnum latencyLevel)
 
 const wchar_t* LatencyLevel::GetLatencyMessage(LatencyLevelEnum latencyLevel)
 {
-	static const wchar_t* message[] =
+	// Each latency-mode notification is looked up from the CSF string table so it
+	// can be localized. The hard-coded English strings below are only fallbacks used
+	// when the corresponding TXT_CNCNET_LATENCY_* label is absent from the CSF.
+	switch (latencyLevel)
 	{
-		/* 0 */ L"CnCNet: Latency mode set to: 0 - Initial" // Players should never see this, if it doesn't then it's a bug
-
-		/* 1 */ ,L"CnCNet: Latency mode set to: 1 - Best"
-		/* 2 */ ,L"CnCNet: Latency mode set to: 2 - Super"
-		/* 3 */ ,L"CnCNet: Latency mode set to: 3 - Excellent"
-		/* 4 */ ,L"CnCNet: Latency mode set to: 4 - Very Good"
-		/* 5 */ ,L"CnCNet: Latency mode set to: 5 - Good"
-		/* 6 */ ,L"CnCNet: Latency mode set to: 6 - Good"
-		/* 7 */ ,L"CnCNet: Latency mode set to: 7 - Default"
-		/* 8 */ ,L"CnCNet: Latency mode set to: 8 - Default"
-		/* 9 */ ,L"CnCNet: Latency mode set to: 9 - Default"
-	};
-
-	return message[(int)latencyLevel];
+		case LatencyLevelEnum::LATENCY_LEVEL_INITIAL: return StringTable::TryFetchString("TXT_CNCNET_LATENCY_0", L"CnCNet: Latency mode set to: 0 - Initial");
+		case LatencyLevelEnum::LATENCY_LEVEL_1:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_1", L"CnCNet: Latency mode set to: 1 - Best");
+		case LatencyLevelEnum::LATENCY_LEVEL_2:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_2", L"CnCNet: Latency mode set to: 2 - Super");
+		case LatencyLevelEnum::LATENCY_LEVEL_3:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_3", L"CnCNet: Latency mode set to: 3 - Excellent");
+		case LatencyLevelEnum::LATENCY_LEVEL_4:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_4", L"CnCNet: Latency mode set to: 4 - Very Good");
+		case LatencyLevelEnum::LATENCY_LEVEL_5:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_5", L"CnCNet: Latency mode set to: 5 - Good");
+		case LatencyLevelEnum::LATENCY_LEVEL_6:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_6", L"CnCNet: Latency mode set to: 6 - Good");
+		case LatencyLevelEnum::LATENCY_LEVEL_7:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_7", L"CnCNet: Latency mode set to: 7 - Default");
+		case LatencyLevelEnum::LATENCY_LEVEL_8:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_8", L"CnCNet: Latency mode set to: 8 - Default");
+		case LatencyLevelEnum::LATENCY_LEVEL_9:       return StringTable::TryFetchString("TXT_CNCNET_LATENCY_9", L"CnCNet: Latency mode set to: 9 - Default");
+		default:                                      return L"";
+	}
 }
 
 LatencyLevelEnum LatencyLevel::FromResponseTime(unsigned char rspTime)
