@@ -55,7 +55,8 @@ public:
 	// multiplayer out-of-sync and a welded in-game speed control). Levers used:
 	//  1. the in-game frame-wait budget global at 0x887330 (consumed by the
 	//     per-frame waiter sub_55E160; derived by the main loop from
-	//     RequestedFPS): -1/0 -> 0 (loop free-runs, uncapped), N>0 -> 1000/N,
+	//     RequestedFPS): -1/0 -> 0 (loop free-runs, uncapped), N>0 -> clamped
+	//     to at least 1000/N so the speed slider can still slow below the cap,
 	//     -2 -> left at the engine-derived value (native 60);
 	//  2. the cnc-ddraw renderer present cap ("TargetFPS", CnCNet build only).
 	// MaxFPS_NoOverride = no-op. Intentionally does NOT log (per-frame hook).

@@ -421,10 +421,15 @@ void Spawner::ApplyMaxFPS(int maxFPS)
 	//
 	// Preset mapping:
 	//   -1 / 0        : budget = 0 -> the waiter skips waiting, loop free-runs
-	//                   (uncapped, >60 FPS)
+	//                   (uncapped, >60 FPS; the speed slider is inherently
+	//                   inactive here -- there is no pacing to modulate)
 	//   -2 (60)       : no override at all -- native pacing incl. the engine's
 	//                   adaptive tweaks
-	//   N > 0         : budget = 1000/N ms (explicit cap)
+	//   N > 0         : budget = max(engine-derived budget, 1000/N ms). A cap,
+	//                   not a replacement: the in-game speed slider can still
+	//                   slow the game below N (engine budget grows -> wins),
+	//                   it just cannot exceed N. This also preserves the
+	//                   engine's adaptive lag compensation.
 	//   NoOverride    : no-op (single-player / nothing configured)
 	// The cnc-ddraw renderer present cap ("TargetFPS", CnCNet build only) is
 	// driven alongside; upstream cnc-ddraw lacks that export, in which case the
@@ -444,7 +449,15 @@ void Spawner::ApplyMaxFPS(int maxFPS)
 	{
 		ddrawTarget = (DWORD)maxFPS;
 		if (maxFPS != 60) // 60 IS the native pacing; don't fight the engine's adaptive tweaks
-			waitBudgetMs = 1000 / maxFPS;
+		{
+			// Clamp, don't replace: read the engine-derived budget for this
+			// frame (final value incl. adaptive tweaks -- the budget block ran
+			// earlier in this frame) and only raise it to our cap if the
+			// engine wants to run faster than N.
+			const int capMs = 1000 / maxFPS;
+			const int engineBudget = *reinterpret_cast<int*>(0x887330);
+			waitBudgetMs = (engineBudget > capMs) ? engineBudget : capMs;
+		}
 	}
 	else
 	{
