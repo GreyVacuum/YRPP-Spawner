@@ -22,6 +22,7 @@
 
 #include <CCINIClass.h>
 #include <Ext/INIClass/Body.h>
+#include <Utilities/Debug.h>
 
 void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 {
@@ -90,17 +91,53 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		PreCalcMaxAhead  = pINI->ReadInteger(pSettingsSection, "PreCalcMaxAhead", PreCalcMaxAhead);
 		MaxLatencyLevel  = (byte)pINI->ReadInteger(pSettingsSection, "MaxLatencyLevel", (int)MaxLatencyLevel);
 		ForceMultiplayer = pINI->ReadBool(pSettingsSection, "ForceMultiplayer", ForceMultiplayer);
-		MultiplayerMaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.MaxFPS", MultiplayerMaxFPS);
-		// Protocol sub-keys inherit Multiplayer.MaxFPS when absent, same pattern
-		// as the QuickMatch.* sub-keys above.
-		if (pINI->Exists(pSettingsSection, "Multiplayer.Protocol0.MaxFPS"))
-			MultiplayerProtocol0MaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.Protocol0.MaxFPS", MultiplayerMaxFPS);
+		MP_MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.MaxFPS", MP_MaxFPS);
+		// Protocol sub-keys inherit MP.MaxFPS / MP.MinFPS when absent, same
+		// pattern as the QuickMatch.* sub-keys above.
+		if (pINI->Exists(pSettingsSection, "MP.Protocol0.MaxFPS"))
+			MP_Protocol0MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol0.MaxFPS", MP_MaxFPS);
 		else
-			MultiplayerProtocol0MaxFPS = MultiplayerMaxFPS;
-		if (pINI->Exists(pSettingsSection, "Multiplayer.Protocol2.MaxFPS"))
-			MultiplayerProtocol2MaxFPS = pINI->ReadInteger(pSettingsSection, "Multiplayer.Protocol2.MaxFPS", MultiplayerMaxFPS);
+			MP_Protocol0MaxFPS = MP_MaxFPS;
+		if (pINI->Exists(pSettingsSection, "MP.Protocol2.MaxFPS"))
+			MP_Protocol2MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol2.MaxFPS", MP_MaxFPS);
 		else
-			MultiplayerProtocol2MaxFPS = MultiplayerMaxFPS;
+			MP_Protocol2MaxFPS = MP_MaxFPS;
+		MP_MinFPS = pINI->ReadInteger(pSettingsSection, "MP.MinFPS", MP_MinFPS);
+		if (pINI->Exists(pSettingsSection, "MP.Protocol0.MinFPS"))
+			MP_Protocol0MinFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol0.MinFPS", MP_MinFPS);
+		else
+			MP_Protocol0MinFPS = MP_MinFPS;
+		if (pINI->Exists(pSettingsSection, "MP.Protocol2.MinFPS"))
+			MP_Protocol2MinFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol2.MinFPS", MP_MinFPS);
+		else
+			MP_Protocol2MinFPS = MP_MinFPS;
+		MP_AdaptiveFPS = pINI->ReadBool(pSettingsSection, "MP.AdaptiveFPS", MP_AdaptiveFPS);
+
+		// MP.SpeedTableMode / MP.SpeedTable0..6 (optional): when the mode is
+		// enabled these 7 per-slot FPS targets replace MP.MaxFPS and MP.MinFPS
+		// entirely. Slot 0 = fastest ... 6 = slowest (the engine's GameSpeed
+		// index direction). Defaults are the engine's native values, so enabling
+		// the mode alone reproduces native behaviour.
+		static const int nativeSlotFPS[7] = { 60, 45, 30, 20, 15, 12, 10 };
+		MP_SpeedTableMode = pINI->ReadBool(pSettingsSection, "MP.SpeedTableMode", MP_SpeedTableMode);
+		for (int i = 0; i < 7; ++i)
+		{
+			char key[32];
+			sprintf(key, "MP.SpeedTable%d", i);
+			const int value = pINI->ReadInteger(pSettingsSection, key, MP_SpeedTable[i]);
+			// Valid: -1 / 0 (uncapped) or 1..1000 (explicit). Anything else
+			// falls back to the engine's native value for that slot.
+			if (value >= -1 && value <= 1000)
+			{
+				MP_SpeedTable[i] = value;
+			}
+			else
+			{
+				MP_SpeedTable[i] = nativeSlotFPS[i];
+				Debug::Log("Spawner: %s=%d out of range (-1/0 or 1..1000) -- using native %d\n",
+					key, value, nativeSlotFPS[i]);
+			}
+		}
 	}
 
 	{ // Tunnel Options

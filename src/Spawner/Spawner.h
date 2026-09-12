@@ -45,19 +45,37 @@ public:
 	static constexpr int MaxFPS_NoOverride = -3;
 
 	// Resolves the effective frame-rate preset for the current session:
-	// Multiplayer.Protocol0.MaxFPS or Multiplayer.Protocol2.MaxFPS (inheriting
-	// Multiplayer.MaxFPS when absent) for network sessions, MaxFPS_NoOverride
-	// for everything else (single-player is left completely alone).
+	// MP.Protocol0.MaxFPS or MP.Protocol2.MaxFPS (inheriting MP.MaxFPS when
+	// absent) for network sessions, MaxFPS_NoOverride for everything else
+	// (single-player is left completely alone).
 	static int GetEffectiveMaxFPS();
+
+	// Resolves the effective FPS floor for the current session (used by the
+	// MP.MinFPS clamp): MP.Protocol0.MinFPS or MP.Protocol2.MinFPS (inheriting
+	// MP.MinFPS when absent) for network sessions, MaxFPS_NoOverride otherwise.
+	// 0 = no floor.
+	static int GetEffectiveMinFPS();
 
 	// Applies a MaxFPS preset WITHOUT touching the netcode-owned engine globals
 	// (RequestedFPS 0xA8B558 / PreCalcFrameRate 0xA8B570 -- pinning them caused
 	// multiplayer out-of-sync and a welded in-game speed control). Levers used:
 	//  1. the in-game frame-wait budget global at 0x887330 (consumed by the
 	//     per-frame waiter sub_55E160; derived by the main loop from
-	//     RequestedFPS): -1/0 -> 0 (loop free-runs, uncapped), N>0 -> clamped
-	//     to at least 1000/N so the speed slider can still slow below the cap,
-	//     -2 -> left at the engine-derived value (native 60);
+	//     RequestedFPS): the speed slider reaches the engine as a synced
+	//     GameSpeed event whose payload is written into RequestedFPS
+	//     (sub_4C6CB0 @0x4C807D), and the budget is 1000/RequestedFPS.
+	//     -1/0 -> free-run at the engine's own max speed, yielding whenever
+	//     the engine wants to run slower (slider below 60 / lag compensation);
+	//     N>0 -> PROPORTIONAL target: budget = 60000/(N * RequestedFPS), i.e.
+	//     the target scales with the engine speed ratio (MaxFPS * req/60), so
+	//     the 7-speed slider sweeps the range between N and MinFPS;
+	//     -2 -> no pacing override and no renderer write at all (native);
+	//     MP.AdaptiveFPS=no -> same proportional target, but adaptive lag
+	//     compensation is deliberately IGNORED (rock-stable pacing);
+	//     MP.SpeedTableMode=yes -> the MP.SpeedTable0..6 targets (0 = fastest
+	//     ... 6 = slowest, defaults = native 60/45/30/20/15/12/10) replace
+	//     MP.MaxFPS AND MP.MinFPS entirely; the renderer cap follows
+	//     MP.SpeedTable0;
 	//  2. the cnc-ddraw renderer present cap ("TargetFPS", CnCNet build only).
 	// MaxFPS_NoOverride = no-op. Intentionally does NOT log (per-frame hook).
 	static void ApplyMaxFPS(int maxFPS);
