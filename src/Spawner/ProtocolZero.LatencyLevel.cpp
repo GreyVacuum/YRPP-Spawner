@@ -19,7 +19,6 @@
 
 #include "ProtocolZero.h"
 #include "ProtocolZero.LatencyLevel.h"
-#include "Spawner.h"
 
 #include <HouseClass.h>
 #include <MessageListClass.h>
@@ -51,10 +50,11 @@ void LatencyLevel::Apply(LatencyLevelEnum newLatencyLevel)
 	CurentLatencyLevel = newLatencyLevel;
 	NewFrameSendRate = static_cast<unsigned char>(newLatencyLevel);
 
-	// Apply the spawner [Settings] frame-rate preset instead of always forcing
-	// 60. This runs only under Protocol 0, so the resolved value is simply
-	// Multiplayer.MaxFPS (default -2 = 60; -1 unlocks the pacer-free engine).
-	Spawner::ApplyMaxFPS(Spawner::GetEffectiveMaxFPS());
+	// Native behaviour, matches yr-patches protocol_zero_c.c LatencyMode_Apply:
+	// the protocol-0 latency adaptation re-pins the network frame rate to 60.
+	// Do NOT route this through the spawner MaxFPS presets -- RequestedFPS /
+	// PreCalcFrameRate are netcode- and speed-control-owned.
+	Game::Network::PreCalcFrameRate = 60;
 
 	Game::Network::PreCalcMaxAhead = GetMaxAhead(newLatencyLevel);
 

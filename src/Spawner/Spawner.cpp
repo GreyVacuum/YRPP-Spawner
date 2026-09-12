@@ -390,52 +390,69 @@ int Spawner::GetEffectiveMaxFPS()
 {
 	const auto pCfg = Spawner::GetConfig();
 	if (!pCfg)
-		return -1; // uncapped
+		return MaxFPS_NoOverride;
 
 	// Multiplayer (LAN / Internet): protocol 0 and protocol 2 each use their own
 	// key, which already collapsed to Multiplayer.MaxFPS at parse time when the
-	// sub-key was absent (see LoadFromINIFile). Default -2 (60) reproduces the
-	// native protocol-2 behavior; -1 unlocks, fully effective under protocol 0
-	// where the engine network pacer is bypassed.
+	// sub-key was absent (see LoadFromINIFile). Default -2 (60) keeps the native
+	// pacing; -1/0 unlocks, N>0 caps.
 	if (SessionClass::IsMultiplayer())
 		return ProtocolZero::Enable
 			? pCfg->MultiplayerProtocol0MaxFPS
 			: pCfg->MultiplayerProtocol2MaxFPS;
 
-	// Campaign / skirmish / other single-player: natively uncapped, and the
-	// engine frame pacer does not throttle single-player (IDA-verified), so
-	// return -1 and never touch the frame rate there.
-	return -1;
+	// Campaign / skirmish / other single-player: never touch the frame rate.
+	return MaxFPS_NoOverride;
 }
 
 void Spawner::ApplyMaxFPS(int maxFPS)
 {
-	// Preset -> concrete targets:
-	//   -1 (uncapped) / 0 (legacy alias): engine target 1000, cnc-ddraw
-	//      TargetFPS = 0 ("present every frame").
-	//   -2 (60) and any other non-positive fallback: engine target 60.
-	//   N > 0: explicit cap N.
-	int engineTarget;
+	// CRITICAL (2026-09-12, IDA-verified): NEVER write Game::Network::
+	// RequestedFPS (0xA8B558) or PreCalcFrameRate (0xA8B570). They are consumed
+	// by the netcode / latency math (imul @0x4FA661, div @0x652110 / 0x6591B0)
+	// and by the in-game speed control; pinning them every frame (even to 60)
+	// caused multiplayer out-of-sync and a welded speed control.
+	//
+	// The safe lever is the in-game frame-wait budget at 0x887330: the main loop
+	// (sub_55D360) derives it every frame (~1000/RequestedFPS ms) and the
+	// per-frame waiter sub_55E160 consumes it at 0x55DE9A -- i.e. AFTER our
+	// 0x55DDA0 hook, so an override written here wins for the current frame
+	// while the netcode-owned globals keep their engine values.
+	//
+	// Preset mapping:
+	//   -1 / 0        : budget = 0 -> the waiter skips waiting, loop free-runs
+	//                   (uncapped, >60 FPS)
+	//   -2 (60)       : no override at all -- native pacing incl. the engine's
+	//                   adaptive tweaks
+	//   N > 0         : budget = 1000/N ms (explicit cap)
+	//   NoOverride    : no-op (single-player / nothing configured)
+	// The cnc-ddraw renderer present cap ("TargetFPS", CnCNet build only) is
+	// driven alongside; upstream cnc-ddraw lacks that export, in which case the
+	// write is a harmless no-op.
+	if (maxFPS == MaxFPS_NoOverride)
+		return;
+
 	DWORD ddrawTarget;
+	int waitBudgetMs = -1; // -1 = leave the engine-derived budget untouched
 
 	if (maxFPS == -1 || maxFPS == 0)
 	{
-		engineTarget = 1000;
-		ddrawTarget  = 0;
+		ddrawTarget = 0;
+		waitBudgetMs = 0;
 	}
 	else if (maxFPS > 0)
 	{
-		engineTarget = maxFPS;
-		ddrawTarget  = (DWORD)maxFPS;
+		ddrawTarget = (DWORD)maxFPS;
+		if (maxFPS != 60) // 60 IS the native pacing; don't fight the engine's adaptive tweaks
+			waitBudgetMs = 1000 / maxFPS;
 	}
 	else
 	{
-		engineTarget = 60;
-		ddrawTarget  = 60;
+		ddrawTarget = 60; // -2: native; renderer cap only
 	}
 
-	Game::Network::PreCalcFrameRate = engineTarget;
-	Game::Network::RequestedFPS     = engineTarget;
+	if (waitBudgetMs >= 0)
+		*reinterpret_cast<int*>(0x887330) = waitBudgetMs;
 
 	// Drive the 3rd-party cnc-ddraw.dll renderer present cap directly.
 	if (HMODULE hDDraw = GetModuleHandleA("ddraw.dll"))
