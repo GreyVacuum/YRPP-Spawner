@@ -125,23 +125,61 @@ public:
 	byte MaxLatencyLevel;
 	bool ForceMultiplayer;
 
-	// Frame-rate cap presets, per mode (spawner [Settings]).
-	// Value semantics (user-finalized, 2026-09-04):
-	//   -1 = uncapped / infinite: engine frame target driven high and cnc-ddraw
-	//        TargetFPS = 0 ("present every frame").
-	//   -2 = 60: classic online cap, engine target and cnc-ddraw TargetFPS = 60.
-	//    0 = fps0: uncapped too, same as -1 (matches cnc-ddraw TargetFPS = 0).
-	//   N>0 = explicit cap N.
-	// Keys (user-finalized). Only multiplayer is controllable: the engine frame
-	// pacer only throttles network sessions (RequestedFPS/0xA8B558 budget is
-	// gated off in single-player, verified via IDA), so there is no
-	// Skirmish.MaxFPS key - skirmish/campaign keep their native uncapped rate.
-	//   Multiplayer.MaxFPS            = -2 (protocol 2 network pacer = 60)
-	//   Multiplayer.Protocol0.MaxFPS  = inherits Multiplayer.MaxFPS when absent
-	//   Multiplayer.Protocol2.MaxFPS  = inherits Multiplayer.MaxFPS when absent
-	int MultiplayerMaxFPS;
-	int MultiplayerProtocol0MaxFPS;
-	int MultiplayerProtocol2MaxFPS;
+	// ===== Frame-rate control system (spawner [Settings], multiplayer only;
+	// single-player always keeps its native pacing) =====
+	//
+	//   MP.MaxFPS            : -2 = native 60 (default, zero intervention)
+	//                          -1 = no ceiling (free-run, >60)
+	//                           N = target N FPS (N may be below OR above 60)
+	//   MP.Protocol0.MaxFPS / MP.Protocol2.MaxFPS
+	//                        : per-protocol override, inheriting MP.MaxFPS
+	//                          when absent (collapsed at parse time)
+	//   MP.MinFPS            : floor (0 = off). Engine-driven slowdowns (speed
+	//                          slider, adaptive lag compensation) never push
+	//                          the FPS below this value.
+	//   MP.Protocol0.MinFPS / MP.Protocol2.MinFPS
+	//                        : per-protocol floor override, inheriting
+	//                          MP.MinFPS when absent (collapsed at parse time).
+	//   MP.AdaptiveFPS       : yes (default) = the engine's own pacing
+	//                          decisions are respected: the speed slider scales
+	//                          the MaxFPS target, and adaptive lag compensation
+	//                          may slow it further (lets lagging players catch
+	//                          up -- the safe choice for multiplayer).
+	//                          no = rock-stable pacing: the slider still scales
+	//                          the target, but lag compensation is IGNORED (the
+	//                          engine cannot self-slow to catch up -- for
+	//                          testing / streaming, riskier online).
+	//
+	// Implementation note (IDA-verified): none of the netcode-owned globals
+	// (RequestedFPS 0xA8B558 / PreCalcFrameRate 0xA8B570) are ever written --
+	// pinning them desyncs multiplayer and welds the speed control. The lever
+	// is the in-game frame-wait budget at 0x887330; the speed slider reaches
+	// the engine as a synced GameSpeed event that writes RequestedFPS.
+	int MP_MaxFPS;
+	int MP_Protocol0MaxFPS;
+	int MP_Protocol2MaxFPS;
+	int MP_MinFPS;
+	int MP_Protocol0MinFPS;
+	int MP_Protocol2MinFPS;
+	//   MP.SpeedTableMode   : No (default) = MP.MaxFPS / MP.MinFPS drive the
+	//                          pacing. Yes = the MP.SpeedTableN keys below take
+	//                          over COMPLETELY -- MP.MaxFPS and MP.MinFPS are
+	//                          ignored (including MaxFPS' -2 kill switch; turn
+	//                          the mode off instead).
+	//   MP.SpeedTableN      : N = 0..6, one explicit FPS target per engine
+	//                          slider slot, 0 = fastest ... 6 = slowest
+	//                          (native slots: 60/45/30/20/15/12/10 FPS -- the
+	//                          engine's GameSpeed index direction, IDA-verified:
+	//                          GameSpeed = 6 - slider position).
+	//                          Value = >60 (unlock), <60 (cap), -1/0 (uncapped
+	//                          for that slot). Default = the engine's own value,
+	//                          so enabling the mode alone changes nothing.
+	//                          MP.AdaptiveFPS still decides whether the engine's
+	//                          adaptive lag compensation is respected, and the
+	//                          renderer cap follows MP.SpeedTable0.
+	bool MP_AdaptiveFPS;
+	bool MP_SpeedTableMode;
+	int  MP_SpeedTable[7];
 
 	// Tunnel Options
 	int  TunnelId;
@@ -221,9 +259,16 @@ public:
 		, MaxLatencyLevel { 0xFF }
 		, ForceMultiplayer { false }
 
-		, MultiplayerMaxFPS { -2 } // 60 (native protocol 2 online behavior)
-		, MultiplayerProtocol0MaxFPS { -2 } // 60; overwritten to inherit Multiplayer.MaxFPS in LoadFromINIFile when key absent
-		, MultiplayerProtocol2MaxFPS { -2 }
+		, MP_MaxFPS { -2 } // 60 (native protocol 2 online behavior)
+		, MP_Protocol0MaxFPS { -2 } // 60; overwritten to inherit MP.MaxFPS in LoadFromINIFile when key absent
+		, MP_Protocol2MaxFPS { -2 }
+		, MP_MinFPS { 0 } // 0 = no floor
+		, MP_Protocol0MinFPS { 0 } // 0; overwritten to inherit MP.MinFPS in LoadFromINIFile when key absent
+		, MP_Protocol2MinFPS { 0 }
+		, MP_AdaptiveFPS { true }
+		, MP_SpeedTableMode { false }
+		// Engine-native per-slot FPS (slot 0 = fastest ... 6 = slowest).
+		, MP_SpeedTable { 60, 45, 30, 20, 15, 12, 10 }
 
 		// Tunnel Options
 		, TunnelId { 0 }
