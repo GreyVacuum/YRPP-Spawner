@@ -124,7 +124,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		{
 			char key[32];
 			sprintf(key, "MP.SpeedTable%d", i);
-			const int value = pINI->ReadInteger(pSettingsSection, key, MP_SpeedTable[i]);
+			const int value = pINI->ReadInteger(pSettingsSection, key, nativeSlotFPS[i]);
 			// Valid: -1 / 0 (uncapped) or 1..1000 (explicit). Anything else
 			// falls back to the engine's native value for that slot.
 			if (value >= -1 && value <= 1000)
