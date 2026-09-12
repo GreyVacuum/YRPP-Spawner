@@ -164,7 +164,7 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		Ra2Mode                  = pINI->ReadBool(pSettingsSection, "Ra2Mode", Ra2Mode);
 		DisableGameSpeed         = pINI->ReadBool(pSettingsSection, "DisableGameSpeed", DisableGameSpeed);
 		QuickMatch               = pINI->ReadBool(pSettingsSection, "QuickMatch", QuickMatch);
-		// QuickMatch ��ѡ�INI ���иü���ʹ����ֵ������Ĭ�ϼ̳� QuickMatch ��ֵ
+		// QuickMatch 子选项：INI 中有该键则使用其值，否则默认继承 QuickMatch 的值
 		if (pINI->Exists(pSettingsSection, "QuickMatch.ProgressScreen"))
 			QuickMatch_ProgressScreen = pINI->ReadBool(pSettingsSection, "QuickMatch.ProgressScreen", QuickMatch_ProgressScreen);
 		else
