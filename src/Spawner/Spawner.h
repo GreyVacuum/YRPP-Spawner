@@ -40,18 +40,25 @@ public:
 		return Config.get();
 	}
 
-	// Resolves the effective frame-rate cap preset for the current session by
-	// game mode: Multiplayer.Protocol0.MaxFPS or Multiplayer.Protocol2.MaxFPS
-	// (inheriting Multiplayer.MaxFPS when absent) for network sessions, -1
-	// (uncapped) for everything else. There is no skirmish key: the engine
-	// frame pacer only throttles network sessions, so single-player is always
-	// left at its native (uncapped) rate.
+	// Preset meaning "override nothing" (returned outside multiplayer, or when
+	// no key is configured). Distinct from every valid preset (-2/-1/0/N>0).
+	static constexpr int MaxFPS_NoOverride = -3;
+
+	// Resolves the effective frame-rate preset for the current session:
+	// Multiplayer.Protocol0.MaxFPS or Multiplayer.Protocol2.MaxFPS (inheriting
+	// Multiplayer.MaxFPS when absent) for network sessions, MaxFPS_NoOverride
+	// for everything else (single-player is left completely alone).
 	static int GetEffectiveMaxFPS();
 
-	// Applies a MaxFPS preset to the engine frame-rate globals and to the
-	// cnc-ddraw.dll renderer present cap. Preset semantics: -1 (or 0) =
-	// uncapped, -2 = 60, N>0 = cap N. Intentionally does NOT log, because the
-	// per-frame hook at 0x55DDA0 calls it every frame.
+	// Applies a MaxFPS preset WITHOUT touching the netcode-owned engine globals
+	// (RequestedFPS 0xA8B558 / PreCalcFrameRate 0xA8B570 -- pinning them caused
+	// multiplayer out-of-sync and a welded in-game speed control). Levers used:
+	//  1. the in-game frame-wait budget global at 0x887330 (consumed by the
+	//     per-frame waiter sub_55E160; derived by the main loop from
+	//     RequestedFPS): -1/0 -> 0 (loop free-runs, uncapped), N>0 -> 1000/N,
+	//     -2 -> left at the engine-derived value (native 60);
+	//  2. the cnc-ddraw renderer present cap ("TargetFPS", CnCNet build only).
+	// MaxFPS_NoOverride = no-op. Intentionally does NOT log (per-frame hook).
 	static void ApplyMaxFPS(int maxFPS);
 
 	static void Init();
