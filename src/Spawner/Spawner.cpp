@@ -488,7 +488,9 @@ void Spawner::ApplyMaxFPS(int maxFPS)
 		const bool bAdaptive = pCfg ? pCfg->MP_AdaptiveFPS : true;
 
 		const int  requested   = Game::Network::RequestedFPS; // read-only!
-		const int  req         = (requested > 0) ? requested : 60;
+		// Guard the arithmetic: clamp the engine value into a sane range so a
+		// modded / corrupted RequestedFPS cannot overflow target calculations.
+		const int  req         = std::clamp((requested > 0) ? requested : 60, 1, 1000);
 		const int  engineBudget = *reinterpret_cast<int*>(0x887330);
 		const int  nativeFloorMs = (1000 / req);
 		const bool bLagRaise   = (engineBudget > nativeFloorMs);
