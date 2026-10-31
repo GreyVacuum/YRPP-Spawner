@@ -34,10 +34,10 @@
 		#define FILE_VERSION_STR _STR(VERSION_MAJOR) "." _STR(VERSION_MINOR) "." _STR(VERSION_REVISION) "." _STR(VERSION_PATCH)
 		#define FILE_VERSION VERSION_MAJOR, VERSION_MINOR, VERSION_REVISION, VERSION_PATCH
 	#else // Local Release builds use a placeholder unless ReleaseVersion is supplied explicitly.
-		#define FILE_VERSION_STR "x.x.x.x"
-		#define FILE_VERSION 0,0,0,0
+		#define FILE_VERSION_STR "1"
+		#define FILE_VERSION 1,0,0,0
 	#endif
-	#define PRODUCT_VERSION "Release Build " FILE_VERSION_STR
+	#define PRODUCT_VERSION "GreyVacuum Release Build " FILE_VERSION_STR
 #elif defined(IS_NIGHTLY_VER) // Nightly build metadata
 	#define FILE_VERSION_STR "Commit " STR_GIT_COMMIT
 	#define FILE_VERSION 0,0,0,0
