@@ -13,7 +13,7 @@
 #elif defined(IS_HARDENED_VER)
 	#define PRODUCT_TYPE "(hardened)"
 #else
-	#define PRODUCT_TYPE "(regular)"
+	#define PRODUCT_TYPE "(Custom)"
 #endif
 
 #define PRODUCT_NAME "YRpp Spawner " PRODUCT_TYPE

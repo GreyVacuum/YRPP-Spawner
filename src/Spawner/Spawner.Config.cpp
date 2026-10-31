@@ -22,6 +22,7 @@
 
 #include <CCINIClass.h>
 #include <Ext/INIClass/Body.h>
+#include <Utilities/Debug.h>
 
 void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 {
@@ -48,6 +49,9 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		FogOfWar           = pINI->ReadBool(pSettingsSection, "FogOfWar", FogOfWar);
 		MCVRedeploy        = pINI->ReadBool(pSettingsSection, "MCVRedeploy", MCVRedeploy);
 		SpecialHouseIsAlly = pINI->ReadBool(pSettingsSection, "SpecialHouseIsAlly", SpecialHouseIsAlly);
+		CooperativeDescription = pINI->ReadBool(pSettingsSection, "CooperativeDescription", CooperativeDescription);
+		CooperativeAIAutoAlly = pINI->ReadBool(pSettingsSection, "CooperativeAIAutoAlly", CooperativeAIAutoAlly);
+		CooperativePlayerAutoAlly = pINI->ReadBool(pSettingsSection, "CooperativePlayerAutoAlly", CooperativePlayerAutoAlly);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIGameMode", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
 			MultiByteToWideChar(CP_UTF8, 0, Main::readBuffer, strlen(Main::readBuffer), UIGameMode, std::size(UIGameMode));
@@ -65,14 +69,15 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 	}
 
 	{ // Scenario Options
-		Seed               = pINI->ReadInteger(pSettingsSection, "Seed", Seed);
-		TechLevel          = pINI->ReadInteger(pSettingsSection, "TechLevel", TechLevel);
-		IsCampaign         = pINI->ReadBool(pSettingsSection, "IsSinglePlayer", IsCampaign);
-		Tournament         = pINI->ReadInteger(pSettingsSection, "Tournament", Tournament);
-		WOLGameID          = pINI->ReadInteger(pSettingsSection, "GameID", WOLGameID);
-		/* ScenarioName   */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
-		/* MapHash        */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
-		ReadMissionSection = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
+		Seed             = pINI->ReadInteger(pSettingsSection, "Seed", Seed);
+		TechLevel        = pINI->ReadInteger(pSettingsSection, "TechLevel", TechLevel);
+		IsCampaign       = pINI->ReadBool(pSettingsSection, "IsSinglePlayer", IsCampaign);
+		Tournament       = pINI->ReadInteger(pSettingsSection, "Tournament", Tournament);
+		WOLGameID        = pINI->ReadInteger(pSettingsSection, "GameID", WOLGameID);
+		/* ScenarioName */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
+		/* MapHash      */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
+		ReadMissionSection  = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
+		ReadCoopCampSection = pINI->ReadBool(pSettingsSection, "ReadCoopCampSection", ReadCoopCampSection);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIMapName", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
 			MultiByteToWideChar(CP_UTF8, 0, Main::readBuffer, strlen(Main::readBuffer), UIMapName, std::size(UIMapName));
@@ -87,6 +92,53 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		PreCalcMaxAhead  = pINI->ReadInteger(pSettingsSection, "PreCalcMaxAhead", PreCalcMaxAhead);
 		MaxLatencyLevel  = (byte)pINI->ReadInteger(pSettingsSection, "MaxLatencyLevel", (int)MaxLatencyLevel);
 		ForceMultiplayer = pINI->ReadBool(pSettingsSection, "ForceMultiplayer", ForceMultiplayer);
+		MP_MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.MaxFPS", MP_MaxFPS);
+		// Protocol sub-keys inherit MP.MaxFPS / MP.MinFPS when absent, same
+		// pattern as the QuickMatch.* sub-keys above.
+		if (pINI->Exists(pSettingsSection, "MP.Protocol0.MaxFPS"))
+			MP_Protocol0MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol0.MaxFPS", MP_MaxFPS);
+		else
+			MP_Protocol0MaxFPS = MP_MaxFPS;
+		if (pINI->Exists(pSettingsSection, "MP.Protocol2.MaxFPS"))
+			MP_Protocol2MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol2.MaxFPS", MP_MaxFPS);
+		else
+			MP_Protocol2MaxFPS = MP_MaxFPS;
+		MP_MinFPS = pINI->ReadInteger(pSettingsSection, "MP.MinFPS", MP_MinFPS);
+		if (pINI->Exists(pSettingsSection, "MP.Protocol0.MinFPS"))
+			MP_Protocol0MinFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol0.MinFPS", MP_MinFPS);
+		else
+			MP_Protocol0MinFPS = MP_MinFPS;
+		if (pINI->Exists(pSettingsSection, "MP.Protocol2.MinFPS"))
+			MP_Protocol2MinFPS = pINI->ReadInteger(pSettingsSection, "MP.Protocol2.MinFPS", MP_MinFPS);
+		else
+			MP_Protocol2MinFPS = MP_MinFPS;
+		MP_AdaptiveFPS = pINI->ReadBool(pSettingsSection, "MP.AdaptiveFPS", MP_AdaptiveFPS);
+
+		// MP.SpeedTableMode / MP.SpeedTable0..6 (optional): when the mode is
+		// enabled these 7 per-slot FPS targets replace MP.MaxFPS and MP.MinFPS
+		// entirely. Slot 0 = fastest ... 6 = slowest (the engine's GameSpeed
+		// index direction). Defaults are the engine's native values, so enabling
+		// the mode alone reproduces native behaviour.
+		static const int nativeSlotFPS[7] = { 60, 45, 30, 20, 15, 12, 10 };
+		MP_SpeedTableMode = pINI->ReadBool(pSettingsSection, "MP.SpeedTableMode", MP_SpeedTableMode);
+		for (int i = 0; i < 7; ++i)
+		{
+			char key[32];
+			sprintf(key, "MP.SpeedTable%d", i);
+			const int value = pINI->ReadInteger(pSettingsSection, key, nativeSlotFPS[i]);
+			// Valid: -1 / 0 (uncapped) or 1..1000 (explicit). Anything else
+			// falls back to the engine's native value for that slot.
+			if (value >= -1 && value <= 1000)
+			{
+				MP_SpeedTable[i] = value;
+			}
+			else
+			{
+				MP_SpeedTable[i] = nativeSlotFPS[i];
+				Debug::Log("Spawner: %s=%d out of range (-1/0 or 1..1000) -- using native %d\n",
+					key, value, nativeSlotFPS[i]);
+			}
+		}
 	}
 
 	{ // Tunnel Options
@@ -113,12 +165,32 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		Ra2Mode                  = pINI->ReadBool(pSettingsSection, "Ra2Mode", Ra2Mode);
 		DisableGameSpeed         = pINI->ReadBool(pSettingsSection, "DisableGameSpeed", DisableGameSpeed);
 		QuickMatch               = pINI->ReadBool(pSettingsSection, "QuickMatch", QuickMatch);
+		// QuickMatch
+		if (pINI->Exists(pSettingsSection, "QuickMatch.ProgressScreen"))
+			QuickMatch_ProgressScreen = pINI->ReadBool(pSettingsSection, "QuickMatch.ProgressScreen", QuickMatch_ProgressScreen);
+		else
+			QuickMatch_ProgressScreen = QuickMatch;
+		if (pINI->Exists(pSettingsSection, "QuickMatch.Diplomacy"))
+			QuickMatch_Diplomacy = pINI->ReadBool(pSettingsSection, "QuickMatch.Diplomacy", QuickMatch_Diplomacy);
+		else
+			QuickMatch_Diplomacy = QuickMatch;
+		if (pINI->Exists(pSettingsSection, "QuickMatch.InGameDialog"))
+			QuickMatch_InGameDialog = pINI->ReadBool(pSettingsSection, "QuickMatch.InGameDialog", QuickMatch_InGameDialog);
+		else
+			QuickMatch_InGameDialog = QuickMatch;
+		if (pINI->Exists(pSettingsSection, "QuickMatch.WaitForPlayers"))
+			QuickMatch_WaitForPlayers = pINI->ReadBool(pSettingsSection, "QuickMatch.WaitForPlayers", QuickMatch_WaitForPlayers);
+		else
+			QuickMatch_WaitForPlayers = QuickMatch;
 		SkipScoreScreen          = pINI->ReadBool(pSettingsSection, "SkipScoreScreen", SkipScoreScreen);
 		WriteStatistics          = pINI->ReadBool(pSettingsSection, "WriteStatistics", WriteStatistics);
+		GenerateStatistics       = pINI->ReadBool(pSettingsSection, "GenerateStatistics", GenerateStatistics);
 		AINamesByDifficulty      = pINI->ReadBool(pSettingsSection, "AINamesByDifficulty", AINamesByDifficulty);
 		ContinueWithoutHumans    = pINI->ReadBool(pSettingsSection, "ContinueWithoutHumans", ContinueWithoutHumans);
 		DefeatedBecomesObserver  = pINI->ReadBool(pSettingsSection, "DefeatedBecomesObserver", DefeatedBecomesObserver);
+		NoneEnemySwitchTeamCivilWarMode = pINI->ReadBool(pSettingsSection, "NoneEnemySwitchTeamCivilWarMode", NoneEnemySwitchTeamCivilWarMode);
 		Observer_ShowAIOnSidebar = pINI->ReadBool(pSettingsSection, "Observer.ShowAIOnSidebar", Observer_ShowAIOnSidebar);
+		ShowLoadingProgress      = pINI->ReadBool(pSettingsSection, "ShowLoadingProgress", ShowLoadingProgress);
 		DisableChat              = pINI->ReadBool(pSettingsSection, "DisableChat", DisableChat);
 	}
 }

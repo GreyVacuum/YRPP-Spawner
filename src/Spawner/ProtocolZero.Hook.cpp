@@ -26,9 +26,19 @@
 #include <Utilities/Debug.h>
 #include <Unsorted.h>
 #include <EventClass.h>
+#include <SessionClass.h>
 
 DEFINE_HOOK(0x55DDA0, MainLoop_AfterRender__ProtocolZero, 0x5)
 {
+	// Enforce the spawner [Settings] frame-rate preset on EVERY frame, in both
+	// directions: applying the configured preset (proportional / uncapped /
+	// fixed-average) AND re-asserting the native default (-2 / unknown
+	// negatives -> hands off the pacing, engine-derived budget stays).
+	// The preset itself never writes the netcode-owned globals
+	// (RequestedFPS / PreCalcFrameRate) -- see Spawner::ApplyMaxFPS.
+	if (auto pCfg = Spawner::GetConfig())
+		Spawner::ApplyMaxFPS(Spawner::GetEffectiveMaxFPS());
+
 	if (ProtocolZero::Enable)
 		ProtocolZero::SendResponseTime2();
 

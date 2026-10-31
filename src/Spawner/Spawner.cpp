@@ -175,6 +175,48 @@ void Spawner::AssignHouses()
 		if (pHousesConfig->HandicapDifficulty != -1)
 			pHouse->AssignHandicap(pHousesConfig->HandicapDifficulty);
 	}
+
+	// Cooperative 模式自动结盟
+	// 原生 MPCooperative::AllyTeams 已被 LJMP 跳过，此处根据配置分别实现
+	// AI 和人类的自动结盟，不会覆盖 spawn.ini 的 [MultiX_Alliances] 设置
+	if (SessionClass::Instance.MPGameMode
+		&& SessionClass::Instance.MPGameMode->MapFilter.Contains("cooperative"))
+	{
+		for (int i = 0; i < count; i++)
+		{
+			const auto pHouse1 = HouseClass::Array.GetItem(i);
+			if (pHouse1->Type->MultiplayPassive)
+				continue;
+
+			const auto pConfig1 = &Spawner::Config->Houses[i];
+			if (pHouse1->IsHumanPlayer && pConfig1->IsObserver)
+				continue;
+
+			const bool autoAlly = pHouse1->IsHumanPlayer
+				? Spawner::Config->CooperativePlayerAutoAlly
+				: Spawner::Config->CooperativeAIAutoAlly;
+			if (!autoAlly)
+				continue;
+
+			for (int j = i + 1; j < count; j++)
+			{
+				const auto pHouse2 = HouseClass::Array.GetItem(j);
+				if (pHouse2->Type->MultiplayPassive)
+					continue;
+
+				// 只和同类结盟（AI 和 AI，人类和人类）
+				if (pHouse2->IsHumanPlayer != pHouse1->IsHumanPlayer)
+					continue;
+
+				const auto pConfig2 = &Spawner::Config->Houses[j];
+				if (pHouse2->IsHumanPlayer && pConfig2->IsObserver)
+					continue;
+
+				pHouse1->Allies.Add(pHouse2->ArrayIndex);
+				pHouse2->Allies.Add(pHouse1->ArrayIndex);
+			}
+		}
+	}
 }
 
 bool Spawner::StartScenario(const char* pScenarioName)
@@ -415,6 +457,229 @@ bool Spawner::LoadSavedGame(const char* saveGameName)
 	return true;
 }
 
+int Spawner::GetEffectiveMaxFPS()
+{
+	const auto pCfg = Spawner::GetConfig();
+	if (!pCfg)
+		return MaxFPS_NoOverride;
+
+	// Multiplayer (LAN / Internet): protocol 0 and protocol 2 each use their own
+	// key, which already collapsed to MP.MaxFPS at parse time when the sub-key
+	// was absent (see LoadFromINIFile). Default -2 (60) keeps the native pacing;
+	// -1/0 unlocks, N>0 caps.
+	if (SessionClass::IsMultiplayer())
+		return ProtocolZero::Enable
+			? pCfg->MP_Protocol0MaxFPS
+			: pCfg->MP_Protocol2MaxFPS;
+
+	// Campaign / skirmish / other single-player: never touch the frame rate.
+	return MaxFPS_NoOverride;
+}
+
+int Spawner::GetEffectiveMinFPS()
+{
+	const auto pCfg = Spawner::GetConfig();
+	if (!pCfg)
+		return MaxFPS_NoOverride;
+
+	// Mirrors GetEffectiveMaxFPS(): protocol 0 and protocol 2 each use their own
+	// MP.Protocol*.MinFPS key, already collapsed to MP.MinFPS at parse time when
+	// the sub-key was absent. 0 = no floor.
+	if (SessionClass::IsMultiplayer())
+		return ProtocolZero::Enable
+			? pCfg->MP_Protocol0MinFPS
+			: pCfg->MP_Protocol2MinFPS;
+
+	return MaxFPS_NoOverride;
+}
+
+void Spawner::ApplyMaxFPS(int maxFPS)
+{
+	// CRITICAL (2026-09-12, IDA-verified): NEVER write Game::Network::
+	// RequestedFPS (0xA8B558) or PreCalcFrameRate (0xA8B570). They are consumed
+	// by the netcode / latency math (imul @0x4FA661, div @0x652110 / 0x6591B0)
+	// and by the in-game speed control; pinning them every frame (even to 60)
+	// caused multiplayer out-of-sync and a welded speed control.
+	//
+	// The safe lever is the in-game frame-wait budget at 0x887330: the main loop
+	// (sub_55D360) derives it every frame (~1000/RequestedFPS ms) and the
+	// per-frame waiter sub_55E160 consumes it at 0x55DE9A -- i.e. AFTER our
+	// 0x55DDA0 hook, so an override written here wins for the current frame
+	// while the netcode-owned globals keep their engine values.
+	//
+	// Preset classes (exhaustive over all int values -- no garbage can fall
+	// through):
+	//   maxFPS <= -2  : native -- no pacing override, renderer cap NOT touched
+	//                   (covers -2 and any unrecognized negative)
+	//   -1 / 0        : NO ceiling -- target budget 0 ms (free-run, >60 FPS)
+	//   N > 0         : MaxFPS target -- at full engine speed the loop is
+	//                   paced at N FPS (budget 1000/N); N may be BELOW 60
+	//                   (slow cap) or ABOVE 60 (unlock to N, e.g. 144).
+	//                   Under the proportional formula the target scales with
+	//                   the engine speed ratio (see AdaptiveFPS below).
+	//   NoOverride    : no-op (single-player / nothing configured)
+	//
+	// Pacing formulas (base is ALWAYS MP.MaxFPS; MP.AdaptiveFPS only decides
+	// whether the engine's own slowdowns are respected, MP.MinFPS clamps):
+	//  * AdaptiveFPS=yes (default): the speed slider scales the target
+	//    (target = MaxFPS * RequestedFPS / 60 -- the 7-speed slider sweeps the
+	//    range instead of collapsing onto the native steps) AND adaptive lag
+	//    compensation may slow it further so lagging players can catch up.
+	//  * AdaptiveFPS=no: the slider still scales the target, but lag
+	//    compensation is IGNORED -- rock-stable pacing the engine cannot
+	//    self-slow (testing / streaming; riskier online).
+	//  * MP.MinFPS clamps the final result in both modes (0 = off).
+	//
+	// How the speed slider reaches the engine (IDA-verified): moving it queues
+	// a synced GameSpeed EVENT whose payload IS the requested FPS; the event
+	// executor (sub_4C6CB0, write @0x4C807D) stores it into RequestedFPS, and
+	// the main loop derives the wait budget n33 = 1000/RequestedFPS from that.
+	// RequestedFPS is only READ here; writing it is what broke multiplayer.
+	if (maxFPS == MaxFPS_NoOverride)
+		return;
+
+	const auto pCfg = Spawner::GetConfig();
+	// MP.SpeedTableMode (optional) replaces MP.MaxFPS AND MP.MinFPS completely:
+	// each engine slider slot gets an explicit FPS target (MP.SpeedTable0..6,
+	// 0 = fastest). The mode is enabled purely by its own switch -- MaxFPS' -2
+	// kill switch does not apply while it is on.
+	const bool  bTableMode   = (pCfg && pCfg->MP_SpeedTableMode);
+
+	// bNative covers -2 AND any unrecognized negative so INI garbage can never
+	// reach the budget arithmetic below (a negative maxFPS would produce a
+	// negative wait budget and a bogus (DWORD) renderer target).
+	const bool  bNative      = (!bTableMode && maxFPS <= -2);
+	const bool  bUncapped    = (!bTableMode && (maxFPS == -1 || maxFPS == 0));
+	const bool  bDriveDDraw  = !bNative; // -2 = zero intervention, incl. renderer
+	DWORD ddrawTarget        = bUncapped ? 0 : (DWORD)maxFPS;
+	int waitBudgetMs = -1; // -1 = leave the engine-derived budget untouched
+
+	if (!bNative)
+	{
+		const bool bAdaptive = pCfg ? pCfg->MP_AdaptiveFPS : true;
+
+		const int  requested   = Game::Network::RequestedFPS; // read-only!
+		// Guard the arithmetic: clamp the engine value into a sane range so a
+		// modded / corrupted RequestedFPS cannot overflow target calculations.
+		const int  req         = std::clamp((requested > 0) ? requested : 60, 1, 1000);
+		const int  engineBudget = *reinterpret_cast<int*>(0x887330);
+		const int  nativeFloorMs = (1000 / req);
+		const bool bLagRaise   = (engineBudget > nativeFloorMs);
+
+		// Current slot on the engine's native 7-speed slider
+		// (0 = fastest ... 6 = slowest, matching the GameSpeed index direction).
+		static const int sliderFPS[7] = { 60, 45, 30, 20, 15, 12, 10 };
+		int slot = -1;
+		for (int i = 0; i < 7; ++i)
+		{
+			if (sliderFPS[i] == requested)
+			{
+				slot = i;
+				break;
+			}
+		}
+
+		if (bTableMode)
+		{
+			// Explicit per-slot target; the engine's own speed when the current
+			// speed matches no native slot (defensive -- modded speed values).
+			const int targetFPS = (slot >= 0) ? pCfg->MP_SpeedTable[slot] : req;
+
+			// Renderer cap follows the fastest slot's target.
+			ddrawTarget = (pCfg->MP_SpeedTable[0] > 0) ? (DWORD)pCfg->MP_SpeedTable[0] : 0;
+
+			if (targetFPS <= 0)
+			{
+				// -1 / 0 entry: uncapped for this slot (free-run unless the
+				// engine asks to slow down and adaptation is enabled).
+				waitBudgetMs = (bAdaptive && bLagRaise) ? engineBudget : 0;
+			}
+			else
+			{
+				waitBudgetMs = 1000 / targetFPS;
+
+				if (bAdaptive && bLagRaise && engineBudget > waitBudgetMs)
+					waitBudgetMs = engineBudget;
+			}
+		}
+		else
+		{
+			// Clamp away INI garbage: values > 1000 FPS are meaningless and
+			// would overflow maxFPS*req / drive 1000/minFPS to 0 (which would
+			// pin the budget to 0 = permanent free-run, inverting the floor).
+			const int  effectiveMinFPS = Spawner::GetEffectiveMinFPS();
+			int  minFPS    = (pCfg && effectiveMinFPS != MaxFPS_NoOverride) ? effectiveMinFPS : 0;
+			const int  clampedMax = (maxFPS > 1000) ? 1000 : maxFPS;
+			if (minFPS > 1000)
+				minFPS = 1000;
+
+			if (bUncapped)
+			{
+				// No ceiling: free-run while the engine is at its own max speed;
+				// yield whenever it wants to run slower -- always for the speed
+				// slider (requested < 60), and for adaptive lag compensation only
+				// when MP.AdaptiveFPS=yes.
+				waitBudgetMs = (requested < 60 || (bAdaptive && bLagRaise)) ? engineBudget : 0;
+			}
+			else
+			{
+				// Proportional target: scale MaxFPS by the engine's current
+				// speed ratio (requested / 60), so the slider sweeps the whole
+				// range between MaxFPS and MinFPS instead of collapsing onto
+				// the native steps: budget = 1000 / (MaxFPS * requested / 60)
+				// e.g. MaxFPS=120: fastest(60) -> 120 FPS, faster(45) -> 90,
+				// quick(30) -> 60, medium(20) -> 40 (then clamped by MinFPS).
+				const int targetFPS = clampedMax * req / 60;
+
+				if (targetFPS <= 0)
+				{
+					waitBudgetMs = (bAdaptive && bLagRaise) ? engineBudget : 0;
+				}
+				else
+				{
+					waitBudgetMs = 1000 / targetFPS;
+
+					// Adaptive lag compensation may slow us further -- but only
+					// in adaptive mode (AdaptiveFPS=no deliberately ignores it).
+					if (bAdaptive && bLagRaise && engineBudget > waitBudgetMs)
+						waitBudgetMs = engineBudget;
+				}
+			}
+
+			// MP.MinFPS floor: FPS must never drop below MinFPS, i.e. the wait
+			// budget must never exceed 1000/MinFPS (even when the engine or the
+			// slider asks for a slower frame).
+			if (minFPS > 0)
+			{
+				const int minBudgetMs = 1000 / minFPS;
+				if (waitBudgetMs > minBudgetMs)
+					waitBudgetMs = minBudgetMs;
+			}
+		}
+	}
+
+	if (waitBudgetMs >= 0)
+		*reinterpret_cast<int*>(0x887330) = waitBudgetMs;
+
+	// Drive the 3rd-party cnc-ddraw.dll renderer present cap directly. NOT
+	// touched for the native preset (-2 / unknown negatives): zero intervention
+	// means cnc-ddraw keeps whatever value its own configuration (e.g.
+	// Video/DDrawTargetFPS) gave it.
+	if (bDriveDDraw)
+	{
+		if (HMODULE hDDraw = GetModuleHandleA("ddraw.dll"))
+		{
+			if (LPDWORD pTargetFPS = (LPDWORD)GetProcAddress(hDDraw, "TargetFPS"))
+				*pTargetFPS = ddrawTarget;
+		}
+		else if (HMODULE hDDraw = LoadLibraryA("ddraw.dll"))
+		{
+			if (LPDWORD pTargetFPS = (LPDWORD)GetProcAddress(hDDraw, "TargetFPS"))
+				*pTargetFPS = ddrawTarget;
+		}
+	}
+}
+
 void Spawner::InitNetwork()
 {
 	const auto pSpawnerConfig = Spawner::GetConfig();
@@ -468,6 +733,16 @@ void Spawner::InitNetwork()
 	Game::Network::ProtocolVersion  = 2;
 	Game::Network::LatencyFudge     = 0;
 	Game::Network::RequestedFPS     = 60;
+
+	// Frame-rate control (spawner [Settings] MP.* presets). One-shot application
+	// here for an immediate effect; the per-frame hook at 0x55DDA0 keeps the
+	// preset (or the native hands-off default) enforced for the whole session.
+	// See ApplyMaxFPS: the netcode-owned globals above are NEVER written again.
+	const int effectiveFPS = Spawner::GetEffectiveMaxFPS();
+	Spawner::ApplyMaxFPS(effectiveFPS);
+	Debug::Log("Spawner: MaxFPS preset=%d, %s (per-frame hook active)\n",
+		effectiveFPS,
+		(pSpawnerConfig->MP_SpeedTableMode ? "MP.SpeedTableMode override" : "proportional formula"));
 	Game::Network::Tournament       = pSpawnerConfig->Tournament;
 	Game::Network::WOLGameID        = pSpawnerConfig->WOLGameID;
 	Game::Network::ReconnectTimeout = pSpawnerConfig->ReconnectTimeout;
