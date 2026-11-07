@@ -1,6 +1,6 @@
 **CnCNet Spawner** is a project that allows CnCNet client application (like [XNA CnCNet Client](https://github.com/CnCNet/xna-cncnet-client)) to "spawn" (launch) the game right into a battle, skipping the menus and configuring game's own and CnCNet-specific things using a config file (`spawn.ini`).
 
-This particular spawner is written using a framework set up by [Ares](https://github.com/Ares-developers/Ares), [Phobos](https://github.com/Phobos-developers/Phobos) projects, uses [YRpp](https://github.com/Phobos-developers/YRpp) to interface with the game and is a rewrite of the original [YR patches](https://github.com/CnCNet/yr-patches) made by CnCNet team. It is built as a DLL loadable by Syringe-compatible injectors. Using [SyringeEx](https://github.com/Phobos-developers/SyringeEx), an extended open-source version of [Syringe](https://github.com/Phobos-developers/Syringe), is recommended, but the original Syringe remains supported.
+This particular spawner is written using a framework set up by [Ares](https://github.com/Ares-developers/Ares), [Phobos](https://github.com/Phobos-developers/Phobos) projects, uses [YRpp](https://github.com/Phobos-developers/YRpp) to interface with the game and is a rewrite of the original [YR patches](https://github.com/CnCNet/yr-patches) made by CnCNet team. It is built as a DLL loadable by Syringe-compatible injectors, and [SyringeEx](https://github.com/Phobos-developers/SyringeEx) — an extended open-source version of [Syringe](https://github.com/Phobos-developers/Syringe) — is required. It is not merely preferred: a number of hooks are placed on relative `call`/`jmp` instructions and return 0, which re-executes the overwritten bytes from the injector's trampoline. SyringeEx rebuilds those branches for their new address; the original Syringe copies them verbatim, so under it they would jump to the wrong target. Some of the affected hooks are on `Main_Loop`'s per-frame path, so the failure would not be subtle.
 
 ## Downloads
 
@@ -33,10 +33,11 @@ Please note that you can build the hardened version only if you have access to i
   - Fake multiplayer flag
 - **[EJ](https://github.com/11EJDE11)**
   - Whole lot of desync fixes
-  - Event verification checks
+  - Replay recording and playback
 - **[ZivDero](https://github.com/ZivDero)**
   - Internal Blowfish integration from Phobos, replacing the external DLL dependency
   - Handicaps (difficulty & credits) support
+  - Multiplayer desync dialog
 - **[Starkku](https://github.com/Starkku)**
   - Allow customizing whether or not special house is ally to all players via spawn.ini option (#51)
 - **[RAZER](https://github.com/CnCRAZER)**

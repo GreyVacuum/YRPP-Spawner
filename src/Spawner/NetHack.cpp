@@ -16,6 +16,9 @@
 
 #include "NetHack.h"
 #include "Spawner.h"
+#include "PacketRedundancy.h"
+#include "PacketBundling.h"
+#include "NetDiagnostics.h"
 
 #include <windows.h>
 #include <stdint.h>
@@ -52,7 +55,37 @@ int WINAPI NetHack::SendTo(
 	tempDest.sin_port = player.Port;
 	tempDest.sin_addr.S_un.S_addr = player.Ip;
 
-	return Tunnel::SendTo(sockfd, buf, len, flags, &tempDest, addrlen);
+	const int copies = PacketRedundancy::CopiesFor(buf, len, index);
+
+	// The engine's datagram, or a bundle of it and copies of what the peer has yet to acknowledge.
+	size_t sendLen = len;
+	char* sendBuf = const_cast<char*>(PacketBundling::PrepareSend(index, buf, len, sendLen,
+		sockfd, flags, &tempDest, addrlen));
+
+	int ret = Tunnel::SendTo(sockfd, sendBuf, sendLen, flags, &tempDest, addrlen);
+	const int firstError = ret == SOCKET_ERROR ? WSAGetLastError() : 0;
+
+	// A failed sendto means this machine lost its link, rather than packets being dropped upstream.
+	if (ret == SOCKET_ERROR)
+		NetDiagnostics::LogSendFailure(index, firstError);
+	// A redundant copy is of the engine's datagram alone: repeating a whole bundle (up to a kilobyte)
+	// filled a slow upload, which the drops then made redundancy answer with more copies.
+	for (int i = 1; i < copies; ++i)
+	{
+		const int extra = Tunnel::SendTo(sockfd, buf, len, flags, &tempDest, addrlen);
+		PacketRedundancy::NoteExtraSend(extra);
+		if (ret == SOCKET_ERROR && extra != SOCKET_ERROR)
+			ret = extra;
+	}
+	// Preserve the first socket error if every copy failed.
+	if (ret == SOCKET_ERROR)
+	{
+		WSASetLastError(firstError);
+		return ret;
+	}
+
+	// What the engine asked to send, whatever went on the wire.
+	return static_cast<int>(len);
 }
 
 int WINAPI NetHack::RecvFrom(
@@ -64,12 +97,22 @@ int WINAPI NetHack::RecvFrom(
 	int* addrlen
 )
 {
-	// call recvfrom first to get the packet
-	int ret = Tunnel::RecvFrom(sockfd, buf, len, flags, src_addr, addrlen);
+	// A copy that arrived in an earlier bundle comes first; its own FD_READ message was posted
+	// when it was queued.
+	const int queued = PacketBundling::TakeQueued(buf, len, src_addr, addrlen);
+	if (queued >= 0)
+		return queued;
+
+	// Read into a buffer of our own: a bundle is longer than the engine's 640 bytes, and so could
+	// be anything a peer sends.
+	char datagram[2048];
+	int ret = Tunnel::RecvFrom(sockfd, datagram, sizeof(datagram), flags, src_addr, addrlen);
 
 	// bail out if error
 	if (ret == -1)
 		return ret;
+
+	int peer = -1;
 
 	// now, we need to map src_addr ip/port to index by reversing the search!
 	for (char i = 0; i < (char)std::size(ListAddress::Array); ++i)
@@ -86,10 +129,11 @@ int WINAPI NetHack::RecvFrom(
 		// found it, set this index to source addr
 		src_addr->sin_addr.s_addr = i + 1;
 		src_addr->sin_port = 0;
+		peer = i;
 		break;
 	}
 
-	return ret;
+	return PacketBundling::Receive(sockfd, datagram, ret, peer, buf, len, src_addr, *addrlen);
 }
 
 int WINAPI Tunnel::SendTo(
@@ -116,10 +160,11 @@ int WINAPI Tunnel::SendTo(
 	*BufFrom = Tunnel::Id;
 	*BufTo = dest_addr->sin_port;
 
-	dest_addr->sin_port = Tunnel::Port;
-	dest_addr->sin_addr.S_un.S_addr = Tunnel::Ip;
+	sockaddr_in sendDest = *dest_addr;
+	sendDest.sin_port = Tunnel::Port;
+	sendDest.sin_addr.S_un.S_addr = Tunnel::Ip;
 
-	return sendto(sockfd, TempBuf, len + 4, flags, (struct sockaddr*)dest_addr, addrlen);
+	return sendto(sockfd, TempBuf, len + 4, flags, (struct sockaddr*)&sendDest, addrlen);
 }
 
 int WINAPI Tunnel::RecvFrom(

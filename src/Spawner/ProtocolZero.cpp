@@ -26,8 +26,11 @@
 #include <HouseClass.h>
 #include <SessionClass.h>
 #include <IPXManagerClass.h>
+#include "FastRetransmit.h"
+#include "NetDiagnostics.h"
 
 bool ProtocolZero::Enable = false;
+int ProtocolZero::ConnectionTimeoutFloor = 300;
 int ProtocolZero::NextSendFrame = -1;
 int ProtocolZero::WorstMaxAhead = LatencyLevel::GetMaxAhead(LatencyLevelEnum::LATENCY_LEVEL_6);
 unsigned char ProtocolZero::MaxLatencyLevel = std::numeric_limits<unsigned char>::max();
@@ -48,23 +51,37 @@ void ProtocolZero::SendResponseTime2()
 	if (ProtocolZero::NextSendFrame >= currentFrame)
 		return;
 
-	const int ipxResponseTime = IPXManagerClass::Instance.ResponseTime();
-	if (ipxResponseTime <= -1)
+	const int engineResponseTime = IPXManagerClass::Instance.ResponseTime();
+	if (engineResponseTime <= -1)
 		return;
+
+	int ipxResponseTime = engineResponseTime;
+
+	// Use the measured delivery delay when it is worse than the engine's slow mean.
+	const int cleanResponseTime = FastRetransmit::WorstDeliveryDelay();
+	if (cleanResponseTime > ipxResponseTime)
+		ipxResponseTime = cleanResponseTime;
+
+	// Both fields are single bytes; saturate rather than wrap, since a wrapped
+	// value is discarded by the receiver.
+	const int cappedForField = ipxResponseTime > 126 ? 126 : ipxResponseTime;
+	const int cappedForLevel = ipxResponseTime > 255 ? 255 : ipxResponseTime;
 
 	EventExt event;
 	event.Type = EventTypeExt::ResponseTime2;
 	event.HouseIndex = (char)HouseClass::CurrentPlayer->ArrayIndex;
 	event.Frame = currentFrame + Game::Network::MaxAhead;
-	event.ResponseTime2.MaxAhead = (int8_t)ipxResponseTime + 1;
-	event.ResponseTime2.LatencyLevel = (uint8_t)LatencyLevel::FromResponseTime((uint8_t)ipxResponseTime);
+	event.ResponseTime2.MaxAhead = (char)(cappedForField + 1);
+	event.ResponseTime2.LatencyLevel = (uint8_t)LatencyLevel::FromResponseTime((uint8_t)cappedForLevel);
 
 	if (event.AddEvent())
 	{
 		ProtocolZero::NextSendFrame = currentFrame + ProtocolZero::SendResponseTimeInterval;
-		Debug::Log("Player %d sending response time of %d, LatencyMode = %d, Frame = %d\n"
+
+		Debug::Log("Player %d sending response time of %d (raw %d), LatencyMode = %d, Frame = %d\n"
 			, event.HouseIndex
 			, event.ResponseTime2.MaxAhead
+			, ipxResponseTime
 			, event.ResponseTime2.LatencyLevel
 			, currentFrame
 		);
@@ -97,22 +114,44 @@ void ProtocolZero::HandleResponseTime2(EventExt* event)
 
 	uint8_t setLatencyMode = 0;
 	int maxMaxAheads = 0;
+	int worstRttSlot = -1;
+	int worstLevelSlot = -1;
+
+	// Age against the newest frame in the reports, not the local frame, so every
+	// client reaches the same result.
+	int newestReportFrame = 0;
+	for (char i = 0; i < (char)std::size(PlayerLastTimingFrame); ++i)
+	{
+		if (PlayerLastTimingFrame[i] > newestReportFrame)
+			newestReportFrame = PlayerLastTimingFrame[i];
+	}
 
 	for (char i = 0; i < (char)std::size(PlayerMaxAheads); ++i)
 	{
-		if (Unsorted::CurrentFrame >= (PlayerLastTimingFrame[i] + (ProtocolZero::SendResponseTimeFrame / 2)))
+		if (newestReportFrame >= (PlayerLastTimingFrame[i] + (ProtocolZero::SendResponseTimeFrame / 2)))
 		{
 			PlayerMaxAheads[i] = 0;
 			PlayerLatencyMode[i] = 0;
 		}
 		else
 		{
-			maxMaxAheads = PlayerMaxAheads[i] > maxMaxAheads ? PlayerMaxAheads[i] : maxMaxAheads;
+			if (PlayerMaxAheads[i] > maxMaxAheads)
+			{
+				maxMaxAheads = PlayerMaxAheads[i];
+				worstRttSlot = i;
+			}
 			if (PlayerLatencyMode[i] > setLatencyMode)
+			{
 				setLatencyMode = PlayerLatencyMode[i];
+				worstLevelSlot = i;
+			}
 		}
 	}
 
 	ProtocolZero::WorstMaxAhead = maxMaxAheads;
-	LatencyLevel::Apply(setLatencyMode);
+
+	// maxMaxAheads is the worst reported response time plus one; back that out so
+	// the descent gate sees the measurement itself.
+	LatencyLevel::Update(static_cast<LatencyLevelEnum>(setLatencyMode), maxMaxAheads > 0 ? maxMaxAheads - 1 : 0,
+		worstRttSlot, worstLevelSlot, newestReportFrame);
 }

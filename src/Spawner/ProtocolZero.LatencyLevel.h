@@ -43,12 +43,44 @@ public:
 	static LatencyLevelEnum CurentLatencyLevel;
 	static uint8_t NewFrameSendRate;
 
-	static void Apply(LatencyLevelEnum newLatencyLevel);
-	static void __forceinline Apply(uint8_t newLatencyLevel)
+	// The MaxAhead this client wants in force, carried by the periodic timing event.
+	static int TargetMaxAhead;
+
+	// Vanilla only ever raises the level. This also lowers it: raises are
+	// immediate, a descent needs headroom, a cooldown and several agreeing
+	// evaluations, and goes one rung at a time. Everything is driven by the event
+	// stream and game frame so all clients decide identically.
+	static bool AllowDescent;
+
+	static const int EvaluationIntervalFrames = 256;
+	static const int ChangeCooldownFrames = 256;
+	static const int GoodEvaluationsRequired = 3;
+	// Headroom: the improvement must still hold with the measurement inflated by half.
+	static const int HeadroomNumerator = 3;
+	static const int HeadroomDenominator = 2;
+
+	// A raise blocks the next descent for longer than other changes.
+	static const int RaiseCooldownFrames = 1024;
+
+	// A descent undone within this many frames counts as a failed attempt.
+	static const int ReversalWindowFrames = 2048;
+	// ...and that level is then refused for this long.
+	static const int FlapCooldownFrames = 4096;
+
+
+	// Called with the worst reported level and response time. The house slots are
+	// for logging only.
+	static void Update(LatencyLevelEnum desired, int worstResponseTime,
+		int worstRttSlot, int worstLevelSlot, int eventFrame);
+	static void ResetDescent();
+
+	static void Apply(LatencyLevelEnum newLatencyLevel, int eventFrame);
+	static void __forceinline Apply(uint8_t newLatencyLevel, int eventFrame)
 	{
-		Apply(static_cast<LatencyLevelEnum>(newLatencyLevel));
+		Apply(static_cast<LatencyLevelEnum>(newLatencyLevel), eventFrame);
 	}
 
+	static void Commit(LatencyLevelEnum newLatencyLevel, int eventFrame);
 	static int GetMaxAhead(LatencyLevelEnum latencyLevel);
 	static const wchar_t* GetLatencyMessage(LatencyLevelEnum latencyLevel);
 	static LatencyLevelEnum FromResponseTime(uint8_t rspTime);

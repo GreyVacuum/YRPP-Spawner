@@ -1,0 +1,1059 @@
+/**
+*  yrpp-spawner
+*
+*  Copyright(C) 2026-present CnCNet
+*
+*  This program is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  This program is distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with this program.If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "ReplaySeek.h"
+#include "ReplayCheckpointCodec.h"
+#include "ReplayRecordedCheckpoint.h"
+#include "ReplayKeyframeState.h"
+#include "ReplayControls.h"
+#include "ReplayOverlay.h"
+#include "ReplaySystem.h"
+#include "ReplaySystem.Internal.h"
+
+#include <Spawner/Spawner.h>
+#include <Utilities/Debug.h>
+#include <Vendor/miniz/miniz.h>
+
+#include <AircraftTypeClass.h>
+#include <BuildingClass.h>
+#include <BuildingTypeClass.h>
+#include <EBolt.h>
+#include <EventClass.h>
+#include <FootClass.h>
+#include <GameModeOptionsClass.h>
+#include <GameOptionsClass.h>
+#include <HouseClass.h>
+#include <InfantryTypeClass.h>
+#include <LoadOptionsClass.h>
+#include <MouseClass.h>
+#include <Memory.h>
+#include <RadBeam.h>
+#include <ScenarioClass.h>
+#include <SidebarClass.h>
+#include <SuperClass.h>
+#include <SessionClass.h>
+#include <Surface.h>
+#include <TacticalClass.h>
+#include <UnitTypeClass.h>
+#include <Unsorted.h>
+#include <VocClass.h>
+
+#include <windows.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <utility>
+#include <vector>
+
+using namespace ReplaySystem::Internal;
+
+namespace ReplaySystem
+{
+	namespace Seek
+	{
+		namespace
+		{
+			constexpr const char* KeyframeSubdirectory = "Replay Keyframes";
+
+			constexpr int SeekRenderInterval = 240;
+
+			// A backwards seek always has somewhere to land, because playback drops this one as it
+			// starts. Frame 0 is the state before the first frame ran.
+			constexpr int FirstKeyframeFrame = 0;
+
+			// A rewind point pairs a temporary savegame with its simulation sidecar.
+			// It is either captured during playback or extracted from the recording.
+			struct Keyframe
+			{
+				int Frame = 0;
+				uint64_t FileBytes = 0;
+				KeyframeState::Snapshot Snapshot;
+			};
+
+			struct SeekState
+			{
+				bool StoreReady = false;
+				int Interval = 0;
+				uint64_t StorageLimitBytes = 0;
+				uint64_t KeyframeBytes = 0;
+				std::vector<Keyframe> Keyframes;
+
+				bool Seeking = false;
+				int TargetFrame = -1;
+				// Loaded at the start of the next frame.
+				bool LoadPending = false;
+				int PendingLoadFrame = -1;
+				bool LoadInProgress = false;
+
+				int FramesSinceRender = 0;
+				// What playback was doing before the seek, restored when it lands.
+				bool ResumePaused = false;
+				bool VocAllowedBeforeSeek = true;
+			};
+
+			SeekState State;
+
+			using Replay::RecordedCheckpoint;
+			using Replay::MaxRecordedCheckpoints;
+			bool RecordingSimulationInProgress = false;
+
+			// Saves the recording may embed, each copied to disk with its sidecar as it is made. Which
+			// ones are embedded is decided once the recording's length is known; see
+			// FinishRecordingCheckpoints.
+			constexpr const char* CheckpointStagingSubdirectory = "Replay Checkpoints";
+			std::vector<Replay::CheckpointSource> StagedCheckpoints;
+
+			std::filesystem::path SavedGameDirectory()
+			{
+				const auto* pConfig = GetConfig();
+				return std::filesystem::path(pConfig ? pConfig->SavedGameDir : "Saved Games");
+			}
+
+			std::filesystem::path KeyframeDirectory()
+			{
+				return SavedGameDirectory() / KeyframeSubdirectory;
+			}
+
+			// One folder per process, so two games recording from the same folder keep apart.
+			std::filesystem::path CheckpointStagingDirectory()
+			{
+				return SavedGameDirectory() / CheckpointStagingSubdirectory / std::to_wstring(GetCurrentProcessId());
+			}
+
+			void RemoveStagedCheckpoint(const Replay::CheckpointSource& staged)
+			{
+				std::error_code error {};
+				std::filesystem::remove(staged.Save, error);
+				std::filesystem::remove(staged.Sidecar, error);
+			}
+
+			void DiscardStagedCheckpoints()
+			{
+				StagedCheckpoints.clear();
+				std::error_code error {};
+				std::filesystem::remove_all(CheckpointStagingDirectory(), error);
+			}
+
+			bool IsProcessRunning(DWORD processId)
+			{
+				const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+				if (!process)
+					return GetLastError() == ERROR_ACCESS_DENIED;
+
+				DWORD exitCode = 0;
+				const bool running = GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
+				CloseHandle(process);
+				return running;
+			}
+
+			// A game that crashed or was killed before its recording closed leaves its staged saves behind.
+			void RemoveAbandonedCheckpointStaging()
+			{
+				std::error_code error {};
+				const auto root = SavedGameDirectory() / CheckpointStagingSubdirectory;
+				for (const auto& entry : std::filesystem::directory_iterator(root, error))
+				{
+					const auto name = entry.path().filename().wstring();
+					wchar_t* end = nullptr;
+					const unsigned long processId = wcstoul(name.c_str(), &end, 10);
+					if (name.empty() || *end != L'\0' || processId == GetCurrentProcessId() || IsProcessRunning(processId))
+						continue;
+
+					std::error_code removeError {};
+					std::filesystem::remove_all(entry.path(), removeError);
+				}
+			}
+
+			// Relative to SavedGameDir, which is what the savegame path hooks expect.
+			void FormatKeyframeName(char* buffer, size_t bufferSize, int frame)
+			{
+				sprintf_s(buffer, bufferSize, "%s\\rk%08d.sav", KeyframeSubdirectory, frame);
+			}
+
+			std::filesystem::path KeyframePath(int frame)
+			{
+				char name[32] = { 0 };
+				sprintf_s(name, "rk%08d.sav", frame);
+				return KeyframeDirectory() / name;
+			}
+
+			void RemoveKeyframeFiles()
+			{
+				std::error_code error {};
+				std::filesystem::remove_all(KeyframeDirectory(), error);
+			}
+
+			bool EnsureKeyframeDirectory()
+			{
+				std::error_code error {};
+				const auto directory = KeyframeDirectory();
+
+				if (std::filesystem::exists(directory, error))
+					return true;
+
+				if (!std::filesystem::create_directories(directory, error))
+				{
+					Debug::Log("[Replay] Could not create the keyframe folder %s; seeking backwards "
+						"will not be available.\n", directory.string().c_str());
+					return false;
+				}
+
+				return true;
+			}
+
+			const Keyframe* NewestKeyframeAtOrBefore(int frame)
+			{
+				const Keyframe* best = nullptr;
+				for (const auto& keyframe : State.Keyframes)
+				{
+					if (keyframe.Frame <= frame && (!best || keyframe.Frame > best->Frame))
+						best = &keyframe;
+				}
+
+				return best;
+			}
+
+			bool HaveKeyframe(int frame)
+			{
+				return std::find_if(State.Keyframes.begin(), State.Keyframes.end(),
+					[frame](const Keyframe& keyframe) { return keyframe.Frame == frame; })
+					!= State.Keyframes.end();
+			}
+
+			const Keyframe* FindKeyframe(int frame)
+			{
+				const auto found = std::find_if(State.Keyframes.begin(), State.Keyframes.end(),
+					[frame](const Keyframe& keyframe) { return keyframe.Frame == frame; });
+				return found == State.Keyframes.end() ? nullptr : &*found;
+			}
+
+			void EvictOldKeyframes()
+			{
+				while (State.StorageLimitBytes > 0
+					&& State.KeyframeBytes > State.StorageLimitBytes
+					&& State.Keyframes.size() > 1)
+				{
+					const auto oldest = std::min_element(State.Keyframes.begin(), State.Keyframes.end(),
+						[](const Keyframe& lhs, const Keyframe& rhs) { return lhs.Frame < rhs.Frame; });
+
+					std::error_code error {};
+					std::filesystem::remove(KeyframePath(oldest->Frame), error);
+					if (error)
+					{
+						Debug::Log("[Replay] Could not remove keyframe %d while enforcing the storage limit.\n",
+							oldest->Frame);
+						break;
+					}
+
+					State.KeyframeBytes -= std::min(State.KeyframeBytes, oldest->FileBytes);
+					State.Keyframes.erase(oldest);
+				}
+			}
+
+			bool WriteKeyframe(int frame)
+			{
+				if (!State.StoreReady || HaveKeyframe(frame))
+					return false;
+
+				char fileName[MAX_PATH] = { 0 };
+				FormatKeyframeName(fileName, sizeof(fileName), frame);
+
+				wchar_t description[64] = { 0 };
+				swprintf_s(description, L"Replay keyframe %d", frame);
+
+				if (!ScenarioClass::SaveGame(fileName, description))
+				{
+					Debug::Log("[Replay] Failed to write the keyframe for frame %d.\n", frame);
+					return false;
+				}
+
+				// Capture the state playback continues from once SaveGame has returned.
+				Keyframe keyframe;
+				keyframe.Frame = frame;
+				if (!keyframe.Snapshot.CaptureAfterSave())
+				{
+					Debug::Log("[Replay] Could not capture post-save simulation state for keyframe %d.\n",
+						frame);
+					std::error_code error {};
+					std::filesystem::remove(KeyframePath(frame), error);
+					return false;
+				}
+
+				std::error_code sizeError {};
+				keyframe.FileBytes = std::filesystem::file_size(KeyframePath(frame), sizeError);
+				if (sizeError)
+				{
+					Debug::Log("[Replay] Could not measure keyframe %d for storage accounting.\n", frame);
+					std::error_code removeError {};
+					std::filesystem::remove(KeyframePath(frame), removeError);
+					return false;
+				}
+
+				State.KeyframeBytes += keyframe.FileBytes;
+				State.Keyframes.push_back(std::move(keyframe));
+				EvictOldKeyframes();
+				return true;
+			}
+
+			void ImportRecordedCheckpoints()
+			{
+				std::vector<unsigned char> archive;
+				if (!ReplayState.File.ReadCheckpointArchive(archive))
+				{
+					Debug::Log("[Replay] Ignoring an unreadable checkpoint archive.\n");
+					return;
+				}
+				if (archive.empty()) return;
+				Replay::CheckpointCodec::Reader reader { archive };
+				uint32_t count = 0;
+				reader.Scalar(count);
+				if (!reader.Good || count > MaxRecordedCheckpoints) return;
+				// Validate the complete envelope before publishing any seek points.
+				std::vector<RecordedCheckpoint> records(count);
+				int previousFrame = -1;
+				for (auto& record : records)
+				{
+					Replay::CheckpointCodec::Fields(reader, record.Frame, record.RawSize,
+						record.CRC, record.Compressed);
+					if (!reader.Good || record.Frame <= previousFrame || record.Frame > TotalFrames()
+						|| record.RawSize == 0 || record.RawSize > Replay::CheckpointCodec::MaxBytes
+						|| record.Compressed.empty()) return;
+					previousFrame = record.Frame;
+				}
+				if (reader.Position != archive.size()) return;
+				for (const auto& record : records)
+				{
+					std::vector<unsigned char> raw(record.RawSize);
+					if (tinfl_decompress_mem_to_mem(raw.data(), raw.size(), record.Compressed.data(),
+						record.Compressed.size(), 0) != raw.size()
+						|| mz_crc32(0, raw.data(), raw.size()) != record.CRC) continue;
+					Replay::CheckpointCodec::Reader payload { raw };
+					std::vector<unsigned char> save, sidecar;
+					Replay::CheckpointCodec::Fields(payload, save, sidecar);
+					Keyframe keyframe;
+					keyframe.Frame = record.Frame;
+					if (!payload.Good || payload.Position != raw.size() || save.empty()
+						|| !keyframe.Snapshot.Deserialize(sidecar)) continue;
+					const auto path = KeyframePath(record.Frame);
+					std::ofstream output(path, std::ios::binary | std::ios::trunc);
+					output.write(reinterpret_cast<const char*>(save.data()), save.size());
+					output.close();
+					if (!output)
+					{
+						std::error_code error; std::filesystem::remove(path, error);
+						continue;
+					}
+					keyframe.FileBytes = save.size();
+					State.KeyframeBytes += keyframe.FileBytes;
+					State.Keyframes.push_back(std::move(keyframe));
+				}
+				EvictOldKeyframes();
+				Debug::Log("[Replay] Loaded %u of %u recorded seek checkpoints.\n",
+					static_cast<unsigned int>(State.Keyframes.size()), count);
+			}
+
+			// LoadMission tears down the in-game session. A seek bypasses the load screen
+			// that would normally restore its input, audio, and in-game flag.
+			void ResumeInGameSessionAfterLoad()
+			{
+				SessionClass::Instance.Resume();
+			}
+
+
+			// Loading replaces the surfaces but leaves Temp pointing at the old hidden surface.
+			void RepointTempSurfaceAfterLoad()
+			{
+				DSurface::Temp = DSurface::Hidden;
+			}
+
+			void __fastcall EBolt_Draw_All()
+			{ JMP_STD(0x4C2830); }
+
+			// The sidebar's money counter rolls towards the current player's money a step at a time
+			// (CreditClass::AI, 0x4A2600; the counter is TabClass + 0x551C). Forced, it shows it at once,
+			// rather than counting from whatever it showed before the load.
+			void SnapCreditsCounter()
+			{
+				using CreditAI = void(__thiscall*)(void*, bool);
+				reinterpret_cast<CreditAI>(0x4A2600)(reinterpret_cast<char*>(&MouseClass::Instance) + 0x551C, true);
+			}
+
+			// Tesla bolts and desolator beams are not simulation objects: each ages and is deleted only
+			// by its own Draw_All (0x4C2830, 0x6591B0), and a savegame carries neither. A seek draws one
+			// frame in SeekRenderInterval, so everything fired during it would play out at once when it
+			// lands, and a backwards load would leave the later timeline's effects on screen.
+			void ClearDrawTimedEffects()
+			{
+				// Expired bolts are deleted by Draw_All without being drawn. Going through it keeps
+				// Phobos' EBolt extension, removed on that path (0x4C2951), in step. A load has
+				// already detached the bolts from their owners: the owner's destructor clears
+				// EBolt::Owner (UnitClass::~UnitClass at 0x7357B0, and Phobos' TechnoExt for the rest).
+				for (auto const pBolt : EBolt::Array)
+					pBolt->Lifetime = 0;
+
+				EBolt_Draw_All();
+
+				// Beams have no extension. Their owners are left alone: after a load they no longer
+				// exist, and TechnoClass::FiringRadBeam is only ever compared against a live beam.
+				for (auto const pBeam : RadBeam::Array)
+					GameDelete(pBeam);
+
+				RadBeam::Array.Count = 0;
+			}
+
+			// Drop input left over from the previous timeline or generated by loading.
+			// Playback will read the keyframe's recorded events from the replay stream again.
+			void ClearTransientEventQueuesForLoad(const char* phase, int keyframeFrame)
+			{
+				const int outCount = EventClass::OutList.Count;
+				const int doCount = EventClass::DoList.Count;
+				const int megaMissionCount = EventClass::MegaMissionList.Count;
+
+				if (outCount > 0 || doCount > 0 || megaMissionCount > 0)
+				{
+					Debug::Log("[Replay] Keyframe %d discarded transient event queues %s loading "
+						"(out %d, do %d, deferred mega-missions %d).\n",
+						keyframeFrame, phase, outCount, doCount, megaMissionCount);
+
+					const int reportCount = std::min(doCount, 4);
+					for (int i = 0; i < reportCount; ++i)
+					{
+						const auto& event = EventClass::DoList[i];
+						Debug::Log("[Replay]   discarded DoList event type %d from frame %u "
+							"(executed %s).\n", static_cast<int>(event.Type), event.Frame,
+							(event.IsExecuted & 1) != 0 ? "yes" : "no");
+					}
+				}
+
+				EventClass::OutList.Init();
+				EventClass::DoList.Init();
+				EventClass::MegaMissionList.Init();
+				std::memset(EventClass::MegaMissionTargetNum, 0,
+					sizeof(EventClass::MegaMissionTargetNum));
+				std::memset(EventClass::MegaMissionTargets, 0,
+					sizeof(EventClass::MegaMissionTargets));
+			}
+
+			// Game functions YRpp has no wrappers for. The game only ever calls them for the local player.
+			class SidebarAccess final : public SidebarClass
+			{
+			public:
+				// SidebarClass::Factory_Link; Ares redirects it into its own cameo lists.
+				bool LinkFactory(FactoryClass* pFactory, AbstractType type, int index)
+					{ JMP_THIS(0x6A6140); }
+			};
+
+			struct StripAccess final : public StripClass
+			{
+				// StripClass::Recalc, which Ares replaces: drops cameos the current player cannot build.
+				bool Recalc()
+					{ JMP_THIS(0x6AA600); }
+			};
+
+			class BuildingAccess final : public BuildingClass
+			{
+			public:
+				// Adds the cameos this building enables, when it belongs to the current player.
+				void UpdateBuildables()
+					{ JMP_THIS(0x4456D0); }
+			};
+
+			static_assert(sizeof(BuildType) == 0x34);
+			static_assert(offsetof(BuildType, unknown_10) == 0x10);
+
+			// Ares keeps the cameos in its own DynamicVectorClass<BuildType>[4] instead of the strips. Its
+			// SidebarClass::Factory_Link replacement walks them, and the two instructions that read the
+			// vector name its Items and Count: mov eax, [Items + ecx*8] at +0x19 and
+			// imul ecx, [Count + ecx*8], 0x34 at +0x20.
+			DynamicVectorClass<BuildType>* FindAresCameoLists()
+			{
+				static DynamicVectorClass<BuildType>* const pLists = []() -> DynamicVectorClass<BuildType>*
+				{
+					const HMODULE ares = GetModuleHandleA("Ares.dll");
+					auto const pCode = ares ? reinterpret_cast<const unsigned char*>(
+						GetProcAddress(ares, "SidebarClass_SetFactoryForObject")) : nullptr;
+					const unsigned char readItems[] = { 0x8B, 0x04, 0xCD };
+					const unsigned char readCount[] = { 0x6B, 0x0C, 0xCD };
+					if (!pCode || memcmp(pCode + 0x19, readItems, sizeof(readItems))
+						|| memcmp(pCode + 0x20, readCount, sizeof(readCount)) || pCode[0x27] != sizeof(BuildType))
+					{
+						Debug::Log("[Replay] This Ares build keeps its sidebar cameos where the replay cannot find "
+							"them; cameos clicked before a checkpoint may stay drawn as starting.\n");
+						return nullptr;
+					}
+
+					uintptr_t items = 0;
+					uintptr_t count = 0;
+					memcpy(&items, pCode + 0x1C, sizeof(items));
+					memcpy(&count, pCode + 0x23, sizeof(count));
+					constexpr auto itemsOffset = offsetof(DynamicVectorClass<BuildType>, Items);
+					constexpr auto countOffset = offsetof(DynamicVectorClass<BuildType>, Count);
+					if (count - items != countOffset - itemsOffset)
+						return nullptr;
+
+					return reinterpret_cast<DynamicVectorClass<BuildType>*>(items - itemsOffset);
+				}();
+
+				return pLists;
+			}
+
+			// A checkpoint recorded during the game carries the recording player's sidebar - Ares saves
+			// the cameo lists with it - so after a load it lists their buildables and points at their
+			// factories, while playback watches someone else. The game only unlinks a factory from the
+			// sidebar when the factory belongs to the current player, so once those factories finish or
+			// are cancelled the sidebar points at freed memory: the build queue shows the wrong items,
+			// and the strip update can crash. Rebuild it for the house being watched. All of this is
+			// local display state; nothing here reaches the simulation.
+			void RebuildSidebarForCurrentPlayer()
+			{
+				HouseClass* const pPlayer = HouseClass::CurrentPlayer;
+				if (!pPlayer)
+					return;
+
+				auto& sidebar = static_cast<SidebarAccess&>(SidebarClass::Instance);
+
+				// Every cameo points at the watched house's factory for its type, or at none.
+				auto relink = [&sidebar, pPlayer](auto const& types)
+				{
+					for (int i = 0; i < types.Count; ++i)
+					{
+						auto const pType = types.Items[i];
+						sidebar.LinkFactory(pPlayer->GetFactoryProducing(pType), pType->WhatAmI(), i);
+					}
+				};
+				relink(BuildingTypeClass::Array);
+				relink(InfantryTypeClass::Array);
+				relink(UnitTypeClass::Array);
+				relink(AircraftTypeClass::Array);
+
+				// A cameo also keeps the state of the local player's last click on it: 1 while the order to
+				// start is on its way, 2 on hold. These are the recording player's, so a building they had
+				// just clicked stayed drawn as starting, with no progress, and greyed out every other
+				// building. Nobody clicks during playback, so none has one.
+				if (auto const pLists = FindAresCameoLists())
+				{
+					for (int tab = 0; tab < 4; ++tab)
+					{
+						for (auto& cameo : pLists[tab])
+							cameo.unknown_10 = 0;
+					}
+				}
+
+				for (auto& strip : sidebar.Tabs)
+					static_cast<StripAccess&>(strip).Recalc();
+
+				for (auto const pBuilding : BuildingClass::Array)
+				{
+					if (pBuilding->Owner == pPlayer)
+						static_cast<BuildingAccess*>(pBuilding)->UpdateBuildables();
+				}
+
+				for (int i = 0; i < pPlayer->Supers.Count; ++i)
+				{
+					if (pPlayer->Supers.Items[i]->IsPresent)
+						sidebar.AddCameo(AbstractType::Special, i);
+				}
+
+				// A building waiting to be placed belongs to whoever was the current player at the save.
+				if (MouseClass::Instance.CurrentBuildingOwnerArrayIndex != pPlayer->ArrayIndex)
+				{
+					MouseClass::Instance.CurrentBuilding = nullptr;
+					MouseClass::Instance.CurrentBuildingType = nullptr;
+					MouseClass::Instance.CurrentBuildingOwnerArrayIndex = -1;
+					MouseClass::Instance.SetActiveFoundation(nullptr);
+				}
+
+				// Drawn on the next frame, not in the middle of the load.
+				sidebar.SidebarNeedsRedraw = true;
+				sidebar.SidebarBackgroundNeedsRedraw = true;
+				for (auto& strip : sidebar.Tabs)
+					strip.NeedsRedraw = true;
+			}
+
+			bool RestorePlaybackAfterLoad(const Keyframe& keyframe)
+			{
+				const int keyframeFrame = keyframe.Frame;
+				if (!keyframe.Snapshot.RestoreBeforeResume(keyframeFrame))
+					return false;
+
+
+				// Finish session and observer setup before the final object repairs, so that
+				// setup cannot overwrite the state those repairs put back.
+				RepointTempSurfaceAfterLoad();
+				ClearDrawTimedEffects();
+				ResumeInGameSessionAfterLoad();
+				// A checkpoint recorded during the game holds the recording player as the current
+				// player, so the house being watched from is put back, then the observer seat, in the
+				// order AssignHouses and the game start take them.
+				ReplaySystem::ApplyPlaybackViewPlayer();
+				ReplaySystem::ReapplyPlaybackSpectator();
+				keyframe.Snapshot.RestoreAfterResume(keyframeFrame, ReplayState.ShowChatAndBeacons);
+				SnapCreditsCounter();
+				RebuildSidebarForCurrentPlayer();
+
+				// The checkpoint also brings back the recording player's selection. Following the
+				// recorded selection, that is the right one; otherwise playback never selects anything.
+				if (!ReplayState.SelectUnits)
+					MapClass::UnselectAll();
+
+				if (ReplayState.HasPlaybackHeader)
+				{
+					const int recordedGameSpeed = std::clamp(
+						static_cast<int>(ReplayState.PlaybackHeader.RecordedGameSpeed), 0, MaxGameSpeedIndex);
+
+					GameOptionsClass::Instance.GameSpeed = recordedGameSpeed;
+					GameModeOptionsClass::Instance.GameSpeed = recordedGameSpeed;
+				}
+
+				ReplayState.DivergenceReported = false;
+
+				// The panel is still on screen but the world under it has been swapped out.
+				Overlay::CancelInteraction();
+
+				return RepositionPlaybackStreamToFrame(keyframeFrame);
+			}
+
+			bool LoadKeyframe(const Keyframe& keyframe)
+			{
+				char fileName[MAX_PATH] = { 0 };
+				FormatKeyframeName(fileName, sizeof(fileName), keyframe.Frame);
+
+				const bool restoreViewerViewport = !ReplayState.LockViewport && TacticalClass::Instance;
+				const Point2D viewerViewport = restoreViewerViewport
+					? TacticalClass::Instance->TacticalCoord1
+					: Point2D { 0, 0 };
+
+				ClearTransientEventQueuesForLoad("before", keyframe.Frame);
+				State.LoadInProgress = true;
+				const bool loaded = LoadOptionsClass::LoadMission(fileName);
+				State.LoadInProgress = false;
+
+				if (!loaded)
+				{
+					Debug::Log("[Replay] Failed to load the keyframe for frame %d.\n", keyframe.Frame);
+					return false;
+				}
+
+				ClearTransientEventQueuesForLoad("after", keyframe.Frame);
+				if (!RestorePlaybackAfterLoad(keyframe))
+					return false;
+
+				Point2D viewportAfterLoad {};
+				bool restoreViewport = false;
+				if (restoreViewerViewport)
+				{
+					viewportAfterLoad = viewerViewport;
+					restoreViewport = true;
+				}
+				else if (ReplayState.LockViewport)
+				{
+					const auto& pending = ReplayState.PendingPlaybackFrame;
+					if (ReplayState.HasPendingPlaybackFrame
+						&& pending.FrameNumber == keyframe.Frame
+						&& (pending.Flags & FrameRecordFlag_TacticalPos) != 0u)
+					{
+						ReplayState.LockedViewportPos = pending.TacticalPos;
+						ReplayState.HasLockedViewportPos = true;
+					}
+
+					if (ReplayState.HasLockedViewportPos)
+					{
+						viewportAfterLoad = ReplayState.LockedViewportPos;
+						restoreViewport = true;
+					}
+				}
+
+				if (restoreViewport && TacticalClass::Instance)
+				{
+					auto* const pTactical = TacticalClass::Instance;
+					pTactical->TacticalCoord1 = viewportAfterLoad;
+					pTactical->TacticalCoord2 = viewportAfterLoad;
+					pTactical->RecalculateViewport();
+					pTactical->Redrawing = true;
+				}
+
+				return true;
+			}
+
+			void EndSeek()
+			{
+				if (!State.Seeking)
+					return;
+
+				State.Seeking = false;
+				State.TargetFrame = -1;
+				State.FramesSinceRender = 0;
+
+				VocClass::VoicesEnabled = State.VocAllowedBeforeSeek;
+				ClearDrawTimedEffects();
+
+				// A seek out of a paused replay leaves it paused on the frame asked for, which is
+				// what stepping and scrubbing both want.
+				if (State.ResumePaused)
+					Controls::SetPlaybackPaused(true);
+
+				// The pacing deadline is stale by however long the seek took.
+				Controls::ResetFramePacing();
+			}
+
+			void BeginSeek(int targetFrame, bool pauseOnArrival)
+			{
+				if (!State.Seeking)
+				{
+					State.ResumePaused = Controls::IsPlaybackPaused();
+					State.VocAllowedBeforeSeek = VocClass::VoicesEnabled;
+				}
+
+				State.ResumePaused = State.ResumePaused || pauseOnArrival;
+
+				State.Seeking = true;
+				State.TargetFrame = targetFrame;
+				State.FramesSinceRender = 0;
+
+				// Frames run back to back with no pacing while this holds, so the sound effects of
+				// every one of them would land at once.
+				VocClass::VoicesEnabled = false;
+				Controls::SetPlaybackPaused(false);
+			}
+		}
+
+		void SetRecordingSimulationInProgress(bool inProgress)
+		{
+			RecordingSimulationInProgress = inProgress;
+		}
+
+		void OnRecordingStarted()
+		{
+			DiscardStagedCheckpoints();
+			RemoveAbandonedCheckpointStaging();
+		}
+
+		// Stages the save as a checkpoint candidate: the .SAV copied, and its sidecar written, into this
+		// process's staging folder. Nothing is compressed or kept in memory; that waits for the end.
+		void OnGameSaved(const wchar_t* path)
+		{
+			if (!ReplayState.Recording || RecordingSimulationInProgress || !path) return;
+			const int frame = static_cast<int>(Unsorted::CurrentFrame);
+			if (frame < 0 || (!StagedCheckpoints.empty() && frame <= StagedCheckpoints.back().Frame)) return;
+
+			const auto directory = CheckpointStagingDirectory();
+			std::error_code error {};
+			std::filesystem::create_directories(directory, error);
+
+			wchar_t name[32] = { 0 };
+			Replay::CheckpointSource staged;
+			staged.Frame = frame;
+			swprintf_s(name, L"c%08d.sav", frame);
+			staged.Save = directory / name;
+			swprintf_s(name, L"c%08d.sidecar", frame);
+			staged.Sidecar = directory / name;
+
+			// Autosaves reuse their slots, so the save is copied rather than referred to.
+			if (!CopyFileW(path, staged.Save.c_str(), FALSE))
+			{
+				Debug::Log("[Replay] Could not stage the save at frame %d as a checkpoint (error %lu).\n",
+					frame, GetLastError());
+				return;
+			}
+
+			KeyframeState::Snapshot snapshot;
+			std::vector<unsigned char> sidecar;
+			bool stagedOk = snapshot.CaptureAfterSave() && snapshot.Serialize(sidecar);
+			if (stagedOk)
+			{
+				std::ofstream output(staged.Sidecar, std::ios::binary | std::ios::trunc);
+				output.write(reinterpret_cast<const char*>(sidecar.data()), static_cast<std::streamsize>(sidecar.size()));
+				output.close();
+				stagedOk = static_cast<bool>(output);
+			}
+			if (!stagedOk)
+			{
+				Debug::Log("[Replay] Save at frame %d could not capture a checkpoint sidecar.\n", frame);
+				RemoveStagedCheckpoint(staged);
+				return;
+			}
+
+			StagedCheckpoints.push_back(std::move(staged));
+			while (StagedCheckpoints.size() > Replay::MaxStagedCheckpoints)
+			{
+				std::vector<int32_t> frames;
+				for (const auto& item : StagedCheckpoints) frames.push_back(item.Frame);
+				const size_t victim = Replay::ChooseStagedCheckpointToEvict(frames);
+				RemoveStagedCheckpoint(StagedCheckpoints[victim]);
+				StagedCheckpoints.erase(StagedCheckpoints.begin() + victim);
+			}
+
+			Debug::Log("[Replay] Staged the save at frame %d as a checkpoint (%u staged).\n",
+				frame, static_cast<unsigned int>(StagedCheckpoints.size()));
+		}
+
+		void FinishRecordingCheckpoints()
+		{
+			if (StagedCheckpoints.empty()) return;
+
+			// A save at shutdown may follow the last frame that was recorded; the choice skips those.
+			const int lastFrame = ReplayState.FrameWriter.LastFrameNumber();
+			std::vector<int32_t> frames;
+			for (const auto& item : StagedCheckpoints) frames.push_back(item.Frame);
+
+			std::vector<Replay::CheckpointSource> chosen;
+			uint64_t rawBytes = 0;
+			for (const size_t index : Replay::ChooseRecordedCheckpoints(frames, lastFrame))
+			{
+				const auto& item = StagedCheckpoints[index];
+				std::error_code error {};
+				rawBytes += std::filesystem::file_size(item.Save, error) + std::filesystem::file_size(item.Sidecar, error);
+				chosen.push_back(item);
+			}
+
+			// What is left of the file's size limit once the frame stream and the statistics are in.
+			uint64_t fileBytes = 0;
+			ReplayState.File.CurrentSize(fileBytes);
+			const uint64_t room = Replay::MaxReplayFileBytes > fileBytes + Replay::StatisticsSectionReserveBytes
+				? Replay::MaxReplayFileBytes - fileBytes - Replay::StatisticsSectionReserveBytes
+				: 0;
+			const auto budget = static_cast<uint32_t>(std::min<uint64_t>(room, Replay::MaxRecordedCheckpointBytes));
+
+			// A payload deflates to under half its size, so a set that could not fit even at half is
+			// thinned first - from the start, where a seek costs least without a checkpoint.
+			while (chosen.size() > 1 && rawBytes / 2 > budget)
+			{
+				std::error_code error {};
+				rawBytes -= std::filesystem::file_size(chosen.front().Save, error)
+					+ std::filesystem::file_size(chosen.front().Sidecar, error);
+				chosen.erase(chosen.begin());
+			}
+
+			const int written = chosen.empty() || budget == 0 ? 0 : ReplayState.File.WriteCheckpointArchive(
+				chosen, budget, Replay::RecordedCheckpointProbes);
+
+			Debug::Log("[Replay] Embedded %d of %u staged saves as checkpoints (the recording ends at frame %d).\n",
+				written, static_cast<unsigned int>(StagedCheckpoints.size()), lastFrame);
+			DiscardStagedCheckpoints();
+		}
+
+		int KeyframeInterval()
+		{
+			return State.Interval;
+		}
+
+		bool IsLoadInProgress()
+		{
+			return State.LoadInProgress;
+		}
+
+		void OnPlaybackStarted()
+		{
+			State = SeekState {};
+
+			const auto* pConfig = GetConfig();
+			State.Interval = pConfig ? std::max(0, pConfig->ReplayKeyframeInterval) : 0;
+			const int storageLimitMB = pConfig
+				? std::max(0, pConfig->ReplayKeyframeStorageLimitMB)
+				: 512;
+			State.StorageLimitBytes = static_cast<uint64_t>(storageLimitMB) * 1024u * 1024u;
+
+			// A previous playback that died without cleaning up would otherwise leave its keyframes
+			// to be mistaken for this one's.
+			RemoveKeyframeFiles();
+			State.StoreReady = EnsureKeyframeDirectory();
+			if (State.StoreReady) ImportRecordedCheckpoints();
+		}
+
+		void OnPlaybackStopped()
+		{
+			DiscardStagedCheckpoints();
+			RecordingSimulationInProgress = false;
+			if (State.StoreReady)
+				RemoveKeyframeFiles();
+
+			if (State.Seeking)
+				VocClass::VoicesEnabled = State.VocAllowedBeforeSeek;
+
+			State = SeekState {};
+		}
+
+
+		void ServiceFrameStart()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			if (State.LoadPending)
+			{
+				const int keyframeFrame = State.PendingLoadFrame;
+				State.LoadPending = false;
+				State.PendingLoadFrame = -1;
+
+				const Keyframe* const keyframe = FindKeyframe(keyframeFrame);
+				if (!keyframe || !LoadKeyframe(*keyframe))
+				{
+					Debug::Log("[Replay] Seek failed; stopping playback.\n");
+					EndSeek();
+					StopReplaySystem();
+					return;
+				}
+			}
+
+			if (State.Seeking && static_cast<int>(Unsorted::CurrentFrame) >= State.TargetFrame)
+				EndSeek();
+
+			if (ReplayState.PlaybackStreamEnded && State.Seeking)
+				EndSeek();
+
+
+			if (State.Interval <= 0 || !State.StoreReady)
+				return;
+
+			const int frame = static_cast<int>(Unsorted::CurrentFrame);
+			if (frame == FirstKeyframeFrame || (frame > 0 && frame % State.Interval == 0))
+				WriteKeyframe(frame);
+		}
+
+		bool RequestSeek(int targetFrame, bool pauseOnArrival)
+		{
+			if (!ReplayState.Playback)
+				return false;
+
+			const int currentFrame = static_cast<int>(Unsorted::CurrentFrame);
+			targetFrame = std::max(0, targetFrame);
+
+			if (targetFrame == currentFrame)
+			{
+				if (pauseOnArrival)
+					Controls::SetPlaybackPaused(true);
+
+				return true;
+			}
+
+			const Keyframe* const keyframe = NewestKeyframeAtOrBefore(targetFrame);
+			const bool mustGoBack = targetFrame < currentFrame;
+			const bool keyframeSkipsAhead = keyframe && keyframe->Frame > currentFrame;
+
+			if (mustGoBack && !keyframe)
+			{
+				Debug::Log("[Replay] No keyframe at or before frame %d; cannot seek back there.\n",
+					targetFrame);
+				return false;
+			}
+
+			BeginSeek(targetFrame, pauseOnArrival);
+
+			if (mustGoBack || keyframeSkipsAhead)
+			{
+				State.LoadPending = true;
+				State.PendingLoadFrame = keyframe->Frame;
+			}
+
+			return true;
+		}
+
+		bool IsSeeking()
+		{
+			return State.Seeking;
+		}
+
+		bool CancelSeek()
+		{
+			if (!State.Seeking)
+				return false;
+
+			// A load that has not run yet is dropped with the seek, so playback carries on from the
+			// frame it is on rather than jumping to the keyframe first.
+			State.LoadPending = false;
+			State.PendingLoadFrame = -1;
+
+			// The viewer asked for playback back, so it runs even if the seek was meant to land paused.
+			State.ResumePaused = false;
+			EndSeek();
+			return true;
+		}
+
+		bool ShouldSkipRenderThisFrame()
+		{
+			if (!State.Seeking)
+				return false;
+
+
+			return State.FramesSinceRender < SeekRenderInterval;
+		}
+
+		void CountRenderedFrame()
+		{
+			if (!State.Seeking)
+				return;
+
+			if (State.FramesSinceRender < SeekRenderInterval)
+				++State.FramesSinceRender;
+			else
+				State.FramesSinceRender = 0;
+		}
+
+		int EarliestSeekableFrame()
+		{
+			if (State.Keyframes.empty())
+				return static_cast<int>(Unsorted::CurrentFrame);
+
+			return std::min(CurrentFrame(), std::min_element(State.Keyframes.begin(), State.Keyframes.end(),
+				[](const Keyframe& lhs, const Keyframe& rhs) { return lhs.Frame < rhs.Frame; })->Frame);
+		}
+
+		int CollectKeyframeFrames(int* outFrames, int maxFrames)
+		{
+			if (!outFrames || maxFrames <= 0)
+				return 0;
+
+			const int count = std::min(maxFrames, static_cast<int>(State.Keyframes.size()));
+			for (int i = 0; i < count; ++i)
+				outFrames[i] = State.Keyframes[static_cast<size_t>(i)].Frame;
+
+			std::sort(outFrames, outFrames + count);
+			return count;
+		}
+
+		int CurrentFrame()
+		{
+			return static_cast<int>(Unsorted::CurrentFrame);
+		}
+
+		int TotalFrames()
+		{
+			const int played = std::max(ReplayState.HighestPlayedFrame, CurrentFrame());
+
+			// A recording that died with the process has no length; use how far playback has got.
+			const int recorded = ReplayState.HasPlaybackHeader
+				? static_cast<int>(ReplayState.PlaybackHeader.TotalFrames)
+				: 0;
+
+			return std::max(recorded, played);
+		}
+
+		int RecordedFPS()
+		{
+			if (!ReplayState.HasPlaybackHeader)
+				return GetReplayFPSFromGameSpeed(0);
+
+			return GetReplayFPSFromGameSpeed(
+				static_cast<int>(ReplayState.PlaybackHeader.RecordedGameSpeed));
+		}
+	}
+}

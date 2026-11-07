@@ -66,17 +66,33 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		AutoSaveInterval     = pINI->ReadInteger(pSettingsSection, "AutoSaveInterval", AutoSaveInterval);
 		NextAutoSaveNumber   = pINI->ReadInteger(pSettingsSection, "NextAutoSaveNumber", NextAutoSaveNumber);
 		ShowMPSaveGameButton = pINI->ReadBool(pSettingsSection, "ShowMPSaveGameButton", ShowMPSaveGameButton);
+
+		EnableReplayRecording    = pINI->ReadBool(pSettingsSection, "EnableReplayRecording", EnableReplayRecording);
+		/* ReplayFileOut        */ pINI->ReadString(pSettingsSection, "ReplayFileOut", ReplayFileOut, ReplayFileOut, sizeof(ReplayFileOut));
+		/* ReplayFile           */ pINI->ReadString(pSettingsSection, "ReplayFile", ReplayFile, ReplayFile, sizeof(ReplayFile));
+		ReplayShroudEnabled          = pINI->ReadBool(pSettingsSection, "ReplayShroudEnabled", ReplayShroudEnabled);
+		ReplayFreeCamera             = pINI->ReadBool(pSettingsSection, "ReplayFreeCamera", ReplayFreeCamera);
+		ReplayShowSelections         = pINI->ReadBool(pSettingsSection, "ReplayShowSelections", ReplayShowSelections);
+		ReplayPlaybackSpeed          = pINI->ReadInteger(pSettingsSection, "ReplayPlaybackSpeed", ReplayPlaybackSpeed);
+		ReplaySpectator              = pINI->ReadBool(pSettingsSection, "ReplaySpectator", ReplaySpectator);
+		ReplayShowChatAndBeacons     = pINI->ReadBool(pSettingsSection, "ReplayShowChatAndBeacons", ReplayShowChatAndBeacons);
+		ReplayViewPlayer             = pINI->ReadInteger(pSettingsSection, "ReplayViewPlayer", ReplayViewPlayer);
+		ReplayControlBar             = pINI->ReadBool(pSettingsSection, "ReplayControlBar", ReplayControlBar);
+		ReplayRenderAtDisplayRate    = pINI->ReadBool(pSettingsSection, "ReplayRenderAtDisplayRate", ReplayRenderAtDisplayRate);
+		ReplayKeyframeInterval        = pINI->ReadInteger(pSettingsSection, "ReplayKeyframeInterval", ReplayKeyframeInterval);
+		ReplayKeyframeStorageLimitMB  = pINI->ReadInteger(pSettingsSection, "ReplayKeyframeStorageLimitMB", ReplayKeyframeStorageLimitMB);
 	}
 
 	{ // Scenario Options
-		Seed             = pINI->ReadInteger(pSettingsSection, "Seed", Seed);
-		TechLevel        = pINI->ReadInteger(pSettingsSection, "TechLevel", TechLevel);
-		IsCampaign       = pINI->ReadBool(pSettingsSection, "IsSinglePlayer", IsCampaign);
-		Tournament       = pINI->ReadInteger(pSettingsSection, "Tournament", Tournament);
-		WOLGameID        = pINI->ReadInteger(pSettingsSection, "GameID", WOLGameID);
-		/* ScenarioName */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
-		/* MapHash      */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
-		ReadMissionSection  = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
+		Seed               = pINI->ReadInteger(pSettingsSection, "Seed", Seed);
+		TechLevel          = pINI->ReadInteger(pSettingsSection, "TechLevel", TechLevel);
+		IsCampaign         = pINI->ReadBool(pSettingsSection, "IsSinglePlayer", IsCampaign);
+		DifficultyModeComputer = pINI->ReadInteger(pSettingsSection, "DifficultyModeComputer", DifficultyModeComputer);
+		Tournament         = pINI->ReadInteger(pSettingsSection, "Tournament", Tournament);
+		WOLGameID          = pINI->ReadInteger(pSettingsSection, "GameID", WOLGameID);
+		/* ScenarioName   */ pINI->ReadString(pSettingsSection, "Scenario", ScenarioName, ScenarioName, sizeof(ScenarioName));
+		/* MapHash        */ pINI->ReadString(pSettingsSection, "MapHash", MapHash, MapHash, sizeof(MapHash));
+		ReadMissionSection = pINI->ReadBool(pSettingsSection, "ReadMissionSection", ReadMissionSection);
 		ReadCoopCampSection = pINI->ReadBool(pSettingsSection, "ReadCoopCampSection", ReadCoopCampSection);
 
 		if (INIClassExt::ReadString_WithoutAresHook(pINI, pSettingsSection, "UIMapName", "", Main::readBuffer, sizeof(Main::readBuffer)) > 0)
@@ -91,7 +107,23 @@ void SpawnerConfig::LoadFromINIFile(CCINIClass* pINI)
 		MaxAhead         = pINI->ReadInteger(pSettingsSection, "MaxAhead", MaxAhead);
 		PreCalcMaxAhead  = pINI->ReadInteger(pSettingsSection, "PreCalcMaxAhead", PreCalcMaxAhead);
 		MaxLatencyLevel  = (byte)pINI->ReadInteger(pSettingsSection, "MaxLatencyLevel", (int)MaxLatencyLevel);
+		FrameAwareGate   = pINI->ReadBool(pSettingsSection, "FrameAwareGate", FrameAwareGate);
+		FastRetransmit   = pINI->ReadBool(pSettingsSection, "FastRetransmit", FastRetransmit);
+		RetransmitBackoff = pINI->ReadBool(pSettingsSection, "RetransmitBackoff", RetransmitBackoff);
+		PacketRedundancy = pINI->ReadBool(pSettingsSection, "PacketRedundancy", PacketRedundancy);
+		RedundancyCopies = pINI->ReadInteger(pSettingsSection, "RedundancyCopies", RedundancyCopies);
+		AdaptiveRedundancy = pINI->ReadBool(pSettingsSection, "AdaptiveRedundancy", AdaptiveRedundancy);
+		RedundantAcks    = pINI->ReadBool(pSettingsSection, "RedundantAcks", RedundantAcks);
+		PacketBundling   = pINI->ReadBool(pSettingsSection, "PacketBundling", PacketBundling);
+		AdaptiveLatencyDescent = pINI->ReadBool(pSettingsSection, "AdaptiveLatencyDescent", AdaptiveLatencyDescent);
+		ConnectionTimeoutFloor = pINI->ReadInteger(pSettingsSection, "ConnectionTimeoutFloor", ConnectionTimeoutFloor);
+		RenderSkip       = pINI->ReadBool(pSettingsSection, "RenderSkip", RenderSkip);
+		RenderSkipMinProcessMs = pINI->ReadInteger(pSettingsSection, "RenderSkipMinProcessMs", RenderSkipMinProcessMs);
+		RenderSkipRenderShare  = pINI->ReadInteger(pSettingsSection, "RenderSkipRenderShare", RenderSkipRenderShare);
+		NetDiagnostics   = pINI->ReadBool(pSettingsSection, "NetDiagnostics", NetDiagnostics);
 		ForceMultiplayer = pINI->ReadBool(pSettingsSection, "ForceMultiplayer", ForceMultiplayer);
+		Host             = pINI->ReadBool(pSettingsSection, "Host", Host);
+
 		MP_MaxFPS = pINI->ReadInteger(pSettingsSection, "MP.MaxFPS", MP_MaxFPS);
 		// Protocol sub-keys inherit MP.MaxFPS / MP.MinFPS when absent, same
 		// pattern as the QuickMatch.* sub-keys above.
