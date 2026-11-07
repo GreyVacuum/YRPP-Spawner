@@ -10,11 +10,24 @@ enum GameOptionsControlID
 	AbortMissionButton = 1314
 };
 
+// Dialog 3002 template geometry, in dialog units.
+enum GameOptionsDialogLayout
+{
+	MultiplayerGameOptionsDialog = 3002,
+	DialogWidth = 533,
+	DialogHeight = 369,
+	ButtonLeft = 425,
+	ButtonWidth = 108,
+	ButtonHeight = 23,
+	// The save button takes AbortMission's slot and moves it to the next one, which places the
+	// save button between GameControls and AbortMission like the single-player dialog does.
+	SaveGameTop = 149,
+	AbortMissionTop = 176
+};
+
 // Create the button before StandardWndProc registers and formats the controls.
 DEFINE_HOOK(0x4F11D6, MultiplayerGameOptionsDialog_AddSaveButton, 0x6)
 {
-	enum { MultiplayerGameOptionsDialog = 3002 };
-
 	if (!Spawner::Enabled || !Spawner::GetConfig()->ShowMPSaveGameButton)
 		return 0;
 
@@ -29,38 +42,40 @@ DEFINE_HOOK(0x4F11D6, MultiplayerGameOptionsDialog_AddSaveButton, 0x6)
 	if (hExistingSave)
 		return 0;
 
-	const auto hControls = Imports::GetDlgItem(hDialog, GameControlsButton);
 	const auto hAbort = Imports::GetDlgItem(hDialog, AbortMissionButton);
-	if (!hControls || !hAbort)
+	const auto hControls = Imports::GetDlgItem(hDialog, GameControlsButton);
+
+	// Convert the template geometry with the dialog's own client size, the same mapping Windows
+	// used to lay out the template controls, so the result does not depend on the resolution,
+	// the DPI or on where the game moves the other buttons.
+	RECT clientRect;
+	if (!Imports::GetClientRect(hDialog, &clientRect) || clientRect.right <= 0 || clientRect.bottom <= 0)
 		return 0;
 
-	RECT controlsRect;
-	RECT abortRect;
-	const auto hasControlsRect = Imports::GetWindowRect(hControls, &controlsRect);
-	const auto hasAbortRect = Imports::GetWindowRect(hAbort, &abortRect);
-	if (!hasControlsRect || !hasAbortRect)
-		return 0;
-
-	const int buttonStepY = abortRect.top - controlsRect.top;
-	MapWindowPoints(nullptr, hDialog, reinterpret_cast<POINT*>(&abortRect), 2);
-	const int width = abortRect.right - abortRect.left;
-	const int height = abortRect.bottom - abortRect.top;
+	const int left = ButtonLeft * clientRect.right / DialogWidth;
+	const int width = ButtonWidth * clientRect.right / DialogWidth;
+	const int height = ButtonHeight * clientRect.bottom / DialogHeight;
+	const int saveTop = SaveGameTop * clientRect.bottom / DialogHeight;
+	const int abortTop = AbortMissionTop * clientRect.bottom / DialogHeight;
 	const auto hInstance = reinterpret_cast<HINSTANCE>(Imports::GetWindowLongA(hDialog, GWL_HINSTANCE));
 	const auto hSave = Imports::CreateWindowExA(0, "BUTTON", "GUI:SaveGame",
 		WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-		abortRect.left, abortRect.top, width, height, hDialog,
+		left, saveTop, width, height, hDialog,
 		reinterpret_cast<HMENU>(SaveGameButton), hInstance, nullptr);
 
 	if (!hSave)
 		return 0;
 
-	const auto font = Imports::SendMessageA(hAbort, WM_GETFONT, 0, 0);
+	const auto font = Imports::SendMessageA(hAbort ? hAbort : hDialog, WM_GETFONT, 0, 0);
 	Imports::SendMessageA(hSave, WM_SETFONT, font, FALSE);
 
-	// Place the save button after game controls in the child window order.
-	Imports::SetWindowPos(hSave, hControls, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-	Imports::SetWindowPos(hAbort, nullptr, abortRect.left, abortRect.top + buttonStepY,
-		0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+	// Keep the save button between the game controls and AbortMission in the child window order.
+	Imports::SetWindowPos(hSave, hControls ? hControls : hAbort, 0, 0, 0, 0,
+		SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+	if (hAbort)
+		Imports::SetWindowPos(hAbort, nullptr, left, abortTop, 0, 0,
+			SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
 	return 0;
 }
