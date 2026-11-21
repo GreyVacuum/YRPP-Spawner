@@ -29,6 +29,9 @@ private:
 
 public:
 	static bool Enable;
+
+	// Minimum connection timeout in 16ms ticks. 0 keeps the engine's 120.
+	static int ConnectionTimeoutFloor;
 	static unsigned char MaxLatencyLevel;
 	static int WorstMaxAhead;
 	static int NextSendFrame;

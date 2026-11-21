@@ -22,9 +22,19 @@
 #include "NetHack.h"
 #include "ProtocolZero.h"
 #include "ProtocolZero.LatencyLevel.h"
+#include "FrameGate.h"
+#include "FastRetransmit.h"
+#include "NetDiagnostics.h"
+#include "RenderSkip.h"
+#include "PacketRedundancy.h"
+#include "PacketBundling.h"
+#include <Replay/ReplaySystem.h>
 #include <Utilities/Debug.h>
 #include <Utilities/DumperTypes.h>
 #include <Misc/Bugfixes.Desyncs.h>
+
+#include <Ext/Session/Body.h>
+#include <UI/DesyncDialog.h>
 
 #include <GameOptionsClass.h>
 #include <GameStrings.h>
@@ -90,6 +100,10 @@ bool Spawner::StartGame()
 
 	bool result = StartScenario(pScenarioName);
 
+	// After the scenario exists, so there is a house to make an observer of
+	if (result)
+		ReplaySystem::ApplyPlaybackSpectator();
+
 	if (Main::GetConfig()->DumpTypes)
 		DumperTypes::Dump();
 
@@ -101,6 +115,10 @@ bool Spawner::StartGame()
 void Spawner::AssignHouses()
 {
 	ScenarioClass::AssignHouses();
+
+	// Ahead of the loop below so that MakeObserver(), which only acts on the current player, sees
+	// the house a replay is being watched from rather than the one that recorded it.
+	ReplaySystem::ApplyPlaybackViewPlayer();
 
 	const int count = std::min(HouseClass::Array.Count, (int)std::size(Spawner::Config->Houses));
 	for (int indexOfHouseArray = 0; indexOfHouseArray < count; indexOfHouseArray++)
@@ -235,6 +253,11 @@ bool Spawner::StartScenario(const char* pScenarioName)
 
 	const auto pSession = &SessionClass::Instance;
 	const auto pGameModeOptions = &GameModeOptionsClass::Instance;
+	const bool isReplayPlayback = ReplaySystem::IsPlaybackRequested();
+
+	// Which spawn.ini player slot this screen belongs to. Always 0 outside replay playback, where
+	// it is whichever player the replay is being watched from.
+	const int localPlayerIndex = ReplaySystem::GetViewPlayerIndex();
 
 	strcpy_s(Game::ScenarioName, 0x200, pScenarioName);
 	pSession->ReadScenarioDescriptions();
@@ -270,7 +293,7 @@ bool Spawner::StartScenario(const char* pScenarioName)
 
 		Game::Seed = Spawner::Config->Seed;
 		Game::TechLevel = Spawner::Config->TechLevel;
-		Game::PlayerColor = Spawner::Config->Players[0].Color;
+		Game::PlayerColor = Spawner::Config->Players[localPlayerIndex].Color;
 		GameOptionsClass::Instance.GameSpeed = Spawner::Config->GameSpeed;
 
 		Spawner::NextAutoSaveNumber = Spawner::Config->NextAutoSaveNumber;
@@ -315,7 +338,7 @@ bool Spawner::StartScenario(const char* pScenarioName)
 
 				pNode->SpectatorFlag = 0xFFFFFFFF;
 
-				if (playerIndex == 0)
+				if (playerIndex == localPlayerIndex)
 					Game::ObserverMode = true;
 			}
 
@@ -350,6 +373,9 @@ bool Spawner::StartScenario(const char* pScenarioName)
 			pSession->GameMode = GameMode::Skirmish;
 	}
 
+	if (ReplaySystem::IsSpectatorPlayback())
+		Game::ObserverMode = true;
+
 	Game::InitRandom();
 
 	// StartScenario
@@ -359,6 +385,12 @@ bool Spawner::StartScenario(const char* pScenarioName)
 
 		if (Config->LoadSaveGame)
 			return Spawner::LoadSavedGame(Config->SaveGameName);
+
+		// A campaign takes its difficulty from RA2MD.INI's [Options] Difficulty, which Read_Scenario_INI
+		// and HouseClass::Read_INI both read, and that only says what the player picked last. spawn.ini
+		// says what this mission was started on, and a replay carries it, so playback gets the same.
+		if (Config->DifficultyModeComputer >= 0 && Config->DifficultyModeComputer <= 2)
+			GameOptionsClass::Instance.Difficulty = 2 - Config->DifficultyModeComputer;
 
 		// Rename MISSIONMD.INI to this
 		// because Ares has LoadScreenText.Color and Phobos has Starkku's PR #1145
@@ -391,6 +423,13 @@ bool Spawner::StartScenario(const char* pScenarioName)
 
 		pSession->GameMode = GameMode::LAN;
 
+		// Until the host announces itself there is no known game master. This
+		// makes our Am_I_Master replacement fall back to the "first human house"
+		// heuristic, and clears any stale value from a previous game (the session
+		// is a reused singleton). Mirrors Vinifera's spawner.
+		pSession->MasterPlayerID() = -1;
+		pSession->MasterPlayerName()[0] = L'\0';
+
 		if (deferForceMultiplayer)
 		{
 			// A Skirmish save already identifies the local house; player names may differ.
@@ -412,8 +451,16 @@ bool Spawner::StartScenario(const char* pScenarioName)
 		else if (Config->LoadSaveGame && !Spawner::Reconcile_Players())
 			return false;
 
-		if (!pSession->CreateConnections())
+		if (Config->LoadSaveGame)
+			DesyncDialog.Note_Save_Loaded(Config->SaveGameName, Unsorted::CurrentFrame);
+
+		if (!isReplayPlayback && !pSession->CreateConnections())
 			return false;
+
+		// Let the other players know who the game host is, so the game master is the
+		// same on every machine.
+		if (Config->Host && !isReplayPlayback)
+			SessionExt::Announce_Master();
 
 		// Ares does not support MultiEngineer switching in multiplayer, however
 		// we can disable it simply by setting EngineerCaptureLevel to 1 - Belonit
@@ -683,6 +730,7 @@ void Spawner::ApplyMaxFPS(int maxFPS)
 void Spawner::InitNetwork()
 {
 	const auto pSpawnerConfig = Spawner::GetConfig();
+	const bool isReplayPlayback = ReplaySystem::IsPlaybackRequested();
 
 	Tunnel::Id = htons((u_short)pSpawnerConfig->TunnelId);
 	Tunnel::Ip = inet_addr(pSpawnerConfig->TunnelIp);
@@ -705,11 +753,34 @@ void Spawner::InitNetwork()
 	Game::Network::PlanetWestwoodStartTime = time(NULL);
 	Game::Network::GameStockKeepingUnit = 0x2901;
 
-	ProtocolZero::Enable = (pSpawnerConfig->Protocol == 0);
+	ProtocolZero::Enable = !isReplayPlayback && (pSpawnerConfig->Protocol == 0);
+
+	// Playback has no peers, so none of the netcode features have anything to act on.
+	FastRetransmit::Enabled    = !isReplayPlayback && pSpawnerConfig->FastRetransmit;
+	FastRetransmit::Backoff    = pSpawnerConfig->FastRetransmit && pSpawnerConfig->RetransmitBackoff;
+	PacketRedundancy::Enabled  = !isReplayPlayback && pSpawnerConfig->PacketRedundancy;
+	PacketRedundancy::Copies   = PacketRedundancy::ClampCopies(pSpawnerConfig->RedundancyCopies);
+	PacketRedundancy::Adaptive = pSpawnerConfig->AdaptiveRedundancy;
+	PacketRedundancy::Acks     = pSpawnerConfig->RedundantAcks;
+	PacketBundling::Enabled    = !isReplayPlayback && pSpawnerConfig->PacketBundling;
+	FrameGate::Enabled         = !isReplayPlayback && pSpawnerConfig->FrameAwareGate;
+	RenderSkip::Enabled        = !isReplayPlayback && pSpawnerConfig->RenderSkip;
+	RenderSkip::MinProcessMs       = std::clamp(pSpawnerConfig->RenderSkipMinProcessMs, 1, 1000);
+	RenderSkip::RenderSharePercent = std::clamp(pSpawnerConfig->RenderSkipRenderShare, 0, 100);
+	NetDiagnostics::Enabled    = !isReplayPlayback && pSpawnerConfig->NetDiagnostics;
+	FastRetransmit::Reset();
+	PacketRedundancy::Reset();
+	PacketBundling::Reset();
+	FrameGate::Reset();
+	RenderSkip::Reset();
+	NetDiagnostics::Reset();
 	if (ProtocolZero::Enable)
 	{
 		Game::Network::FrameSendRate = 2;
 		Game::Network::PreCalcMaxAhead = pSpawnerConfig->PreCalcMaxAhead;
+
+		LatencyLevel::AllowDescent = pSpawnerConfig->AdaptiveLatencyDescent;
+		ProtocolZero::ConnectionTimeoutFloor = pSpawnerConfig->ConnectionTimeoutFloor;
 
 		ProtocolZero::NextSendFrame = -1;
 		ProtocolZero::WorstMaxAhead = LatencyLevel::GetMaxAhead(LatencyLevelEnum::LATENCY_LEVEL_6);
@@ -722,12 +793,17 @@ void Spawner::InitNetwork()
 	}
 	else
 	{
-		Game::Network::FrameSendRate = pSpawnerConfig->FrameSendRate;
+		Game::Network::FrameSendRate = isReplayPlayback ? 1 : pSpawnerConfig->FrameSendRate;
 	}
 
-	Game::Network::MaxAhead = pSpawnerConfig->MaxAhead == -1
-		? Game::Network::FrameSendRate * 6
-		: pSpawnerConfig->MaxAhead;
+	// Playback has no peers to stay ahead of, and every frame's events come out of the file on the
+	// frame they were recorded on, so send rate and MaxAhead are both pinned to 1
+	if (isReplayPlayback)
+		Game::Network::MaxAhead = 1;
+	else if (pSpawnerConfig->MaxAhead == -1)
+		Game::Network::MaxAhead = Game::Network::FrameSendRate * 6;
+	else
+		Game::Network::MaxAhead = pSpawnerConfig->MaxAhead;
 
 	Game::Network::MaxMaxAhead      = 0;
 	Game::Network::ProtocolVersion  = 2;
@@ -947,10 +1023,12 @@ void Spawner::After_Main_Loop()
 
 		auto SaveGame = [PrintMessage](const char* fName, const wchar_t* description)
 		{
-			if (ScenarioClass::SaveGame(fName, description))
+			const bool saved = ScenarioClass::SaveGame(fName, description);
+			if (saved)
 				PrintMessage(StringTable::LoadString(GameStrings::TXT_GAME_WAS_SAVED));
 			else
 				PrintMessage(StringTable::LoadString(GameStrings::TXT_ERROR_SAVING_GAME));
+			return saved;
 		};
 
 		// Send the message.
@@ -1011,7 +1089,8 @@ void Spawner::After_Main_Loop()
 			// regardless as it shouldn't impact anything. The suffix for it is unavailable
 			// though as it would require a custom event (seems overkill for such).
 			saveGameDescription += StringTable::LoadString(GameStrings::TXT_MULTIPLAYER_GAME);
-			SaveGame(GameStrings::SAVEGAME_NET, saveGameDescription.c_str());
+			const bool saved = SaveGame(GameStrings::SAVEGAME_NET, saveGameDescription.c_str());
+			DesyncDialog.Note_Save_Made(Unsorted::CurrentFrame, saved);
 
 			Spawner::NextAutoSaveFrame = Unsorted::CurrentFrame + pConfig->AutoSaveInterval;
 		}

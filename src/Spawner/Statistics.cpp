@@ -18,6 +18,7 @@
 */
 
 #include "Spawner.h"
+#include <Replay/ReplaySystem.h>
 
 #include <CCFileClass.h>
 #include <FPSCounter.h>
@@ -37,7 +38,9 @@ static constexpr int ScoreGameSlot = 0;
 
 bool __forceinline IsStatisticsEnabled()
 {
-	if (Spawner::Enabled && !SessionClass::IsCampaign())
+	// Never in a launch made to watch a replay: watching a game to its win/lose screen, or finishing
+	// one taken over from playback, would otherwise overwrite the real stats.dmp.
+	if (Spawner::Enabled && !SessionClass::IsCampaign() && !ReplaySystem::IsPlaybackRequested())
 		return Main::GetConfig()->WriteStatistics || Spawner::GetConfig()->WriteStatistics;
 
 	return false;
@@ -113,11 +116,14 @@ static void WriteDTALog()
 // Write stats.dmp
 DEFINE_HOOK(0x6C856C, SendStatisticsPacket_WriteStatisticsDump, 0x5)
 {
+	GET(void*, buf, EAX);
+	const int lengthOfPacket = *reinterpret_cast<int*>(0xB0BD90);
+
+	// A recording keeps the packet whether or not stats.dmp is written.
+	ReplaySystem::RecordStatisticsPacket(buf, lengthOfPacket);
+
 	if (IsStatisticsEnabled())
 	{
-		GET(void*, buf, EAX);
-		int lengthOfPacket = *reinterpret_cast<int*>(0xB0BD90);
-
 		CCFileClass statsFile = CCFileClass("stats.dmp");
 		if (statsFile.Open(FileAccessMode::Write))
 		{
@@ -241,13 +247,32 @@ DEFINE_HOOK(0x6C882A, RegisterGameEndTime_CorrectDuration, 0x6)
 	return 0;
 }
 
+// The engine only counts captured buildings and crates in Internet games; count them in every
+// recorded game. Score tracking only.
+bool __forceinline ShouldCountForStatistics()
+{
+	return IsStatisticsEnabled()
+		|| SessionClass::Instance.GameMode == GameMode::Internet
+		|| ReplaySystem::IsRecordingActive();
+}
+
 DEFINE_HOOK(0x448524, BuildingClass_Captured_SendStatistics, 0x7)
 {
 	enum { Send = 0x44852D, DontSend = 0x448559 };
 
-	return IsStatisticsEnabled() || (SessionClass::Instance.GameMode == GameMode::Internet)
+	return ShouldCountForStatistics()
 		? Send
 		: DontSend;
+}
+
+// CellClass::Goodie_Check, before the crate count is incremented.
+DEFINE_HOOK(0x481D6B, CellClass_GoodieCheck_CountCrate, 0x7)
+{
+	enum { Count = 0x481D74, DontCount = 0x481D86 };
+
+	return ShouldCountForStatistics()
+		? Count
+		: DontCount;
 }
 
 DEFINE_HOOK(0x55D0FB, AuxLoop_SendStatistics_1, 0x5)

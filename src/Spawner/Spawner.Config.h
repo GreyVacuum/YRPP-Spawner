@@ -108,10 +108,39 @@ public:
 	int NextAutoSaveNumber;
 	bool ShowMPSaveGameButton;
 
+	// Replay Options
+	bool EnableReplayRecording;
+	// Where a recording is written, relative to the game directory. Missing folders are created.
+	char ReplayFileOut[MAX_PATH];
+	// The replay to watch. Empty means no playback.
+	char ReplayFile[MAX_PATH];
+	// Keep the recording player's shroud instead of revealing the map.
+	bool ReplayShroudEnabled;
+	// Move the camera yourself instead of following the recorded view.
+	bool ReplayFreeCamera;
+	bool ReplayShowSelections;
+	// Playback frame rate. Zero uses the recorded speed.
+	int  ReplayPlaybackSpeed;
+	// Watch as an observer with full map visibility.
+	bool ReplaySpectator;
+	// Playback only. Recording chat, beacons and taunts is unconditional.
+	bool ReplayShowChatAndBeacons;
+	// Player slot to watch. Zero or -1 uses the recorder.
+	int  ReplayViewPlayer;
+	// Show the playback control bar initially.
+	bool ReplayControlBar;
+	bool ReplayRenderAtDisplayRate;
+	// Frames between playback keyframes. Zero still allows recorded checkpoints.
+	int  ReplayKeyframeInterval;
+	// Maximum keyframe storage in MB. Zero disables the limit.
+	int  ReplayKeyframeStorageLimitMB;
 	// Scenario Options
 	int  Seed;
 	int  TechLevel;
 	bool IsCampaign;
+	// The computer's campaign difficulty as the client writes it - 0 hard, 2 easy - which is the
+	// player's difficulty reversed. -1 when spawn.ini has none.
+	int  DifficultyModeComputer;
 	int  Tournament;
 	DWORD WOLGameID;
 	char ScenarioName[260];
@@ -128,7 +157,22 @@ public:
 	int MaxAhead;
 	int PreCalcMaxAhead;
 	byte MaxLatencyLevel;
+	bool FrameAwareGate;
+	bool FastRetransmit;
+	bool RetransmitBackoff;
+	bool PacketRedundancy;
+	int  RedundancyCopies;
+	bool AdaptiveRedundancy;
+	bool RedundantAcks;
+	bool PacketBundling;
+	bool AdaptiveLatencyDescent;
+	int  ConnectionTimeoutFloor;
+	bool RenderSkip;
+	int  RenderSkipMinProcessMs;
+	int  RenderSkipRenderShare;
+	bool NetDiagnostics;
 	bool ForceMultiplayer;
+	bool Host; // True on the machine hosting the game; announces itself as the game master at start.
 
 	// ===== Frame-rate control system (spawner [Settings], multiplayer only;
 	// single-player always keeps its native pacing) =====
@@ -251,11 +295,26 @@ public:
 		, AutoSaveInterval { 7200 }
 		, NextAutoSaveNumber { 0 }
 		, ShowMPSaveGameButton { true }
+		, EnableReplayRecording { false }
+		, ReplayFileOut { "replay.yrrp" }
+		, ReplayFile { "" }
+		, ReplayShroudEnabled { false }
+		, ReplayFreeCamera { true }
+		, ReplayShowSelections { false }
+		, ReplayPlaybackSpeed { 0 }
+		, ReplaySpectator { false }
+		, ReplayShowChatAndBeacons { true }
+		, ReplayViewPlayer { -1 }
+		, ReplayControlBar { false }
+		, ReplayRenderAtDisplayRate { true }
+		, ReplayKeyframeInterval { 750 }
+		, ReplayKeyframeStorageLimitMB { 512 }
 
 		// Scenario Options
 		, Seed { 0 }
 		, TechLevel { 10 }
 		, IsCampaign { false }
+		, DifficultyModeComputer { -1 }
 		, Tournament { 0 }
 		, WOLGameID { 0xDEADBEEF }
 		, ScenarioName { "spawnmap.ini" }
@@ -272,7 +331,22 @@ public:
 		, MaxAhead { -1 }
 		, PreCalcMaxAhead { 0 }
 		, MaxLatencyLevel { 0xFF }
+		, FrameAwareGate { true }
+		, FastRetransmit { true }
+		, RetransmitBackoff { true }
+		, PacketRedundancy { true } // With bundling: under 20% loss, half the input delay of either alone, for more datagrams
+		, RedundancyCopies { 2 }
+		, AdaptiveRedundancy { true }
+		, RedundantAcks { true }
+		, PacketBundling { true }
+		, AdaptiveLatencyDescent { true }
+		, ConnectionTimeoutFloor { 300 }
+		, RenderSkip { true }
+		, RenderSkipMinProcessMs { 20 }
+		, RenderSkipRenderShare { 25 }
+		, NetDiagnostics { true }
 		, ForceMultiplayer { false }
+		, Host { false }
 
 		, MP_MaxFPS { -2 } // 60 (native protocol 2 online behavior)
 		, MP_Protocol0MaxFPS { -2 } // 60; overwritten to inherit MP.MaxFPS in LoadFromINIFile when key absent

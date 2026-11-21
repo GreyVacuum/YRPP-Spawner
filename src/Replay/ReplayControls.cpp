@@ -1,0 +1,483 @@
+/**
+*  yrpp-spawner
+*
+*  Copyright(C) 2026-present CnCNet
+*
+*  This program is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  This program is distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with this program.If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "ReplayControls.h"
+#include "ReplaySeek.h"
+#include "ReplaySystem.h"
+#include "ReplayFormat.h"
+#include "ReplaySystem.Internal.h"
+#include <ColorScheme.h>
+#include <EventClass.h>
+#include <HouseClass.h>
+#include <MapClass.h>
+#include <MessageListClass.h>
+#include <TacticalClass.h>
+#include <TechnoClass.h>
+#include <Unsorted.h>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+
+using namespace ReplaySystem::Internal;
+
+namespace ReplaySystem
+{
+	namespace Controls
+	{
+		namespace
+		{
+			constexpr int ControlMessageDurationFrames = 90;
+
+			struct PlaybackControlState
+			{
+				int FrameRate = 0;
+				// Performance-counter deadline; reset after pause, speed changes, and seeking.
+				double NextFrameDue = 0.0;
+				bool Paused = false;
+				// Hold the pause state steady until the next frame-start hook.
+				int SingleStepTargetFrame = -1;
+				// Input runs after frame preparation, so resuming must wait for frame start.
+				bool ResumePending = false;
+				bool ControlBarVisible = false;
+				// Performance-counter time the next frame is drawn at when playing faster than the
+				// display refreshes.
+				double NextRenderDue = 0.0;
+			};
+
+			PlaybackControlState State;
+			// Use a high-resolution clock for playback rates above the engine timer resolution.
+			double PlaybackClockMilliseconds()
+			{
+				static double ticksPerMillisecond = 0.0;
+				if (ticksPerMillisecond == 0.0)
+				{
+					LARGE_INTEGER frequency {};
+					if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart == 0)
+						return 0.0;
+
+					ticksPerMillisecond = static_cast<double>(frequency.QuadPart) / 1000.0;
+				}
+
+				LARGE_INTEGER counter {};
+				if (!QueryPerformanceCounter(&counter))
+					return 0.0;
+
+				return static_cast<double>(counter.QuadPart) / ticksPerMillisecond;
+			}
+
+			void SetPausedState(bool paused)
+			{
+				State.Paused = paused;
+				State.NextRenderDue = 0.0;
+				// Never carry a pre-pause or single-step deadline into resumed playback. Starting the
+				// pacing clock afresh prevents a burst of unpaced frames on resume.
+				State.NextFrameDue = 0.0;
+			}
+
+			// Whether the viewer has quit from the in-game menu: an Exit event from the local house
+			// that has not run yet. It waits in OutList until Queue_AI moves it to DoList.
+			bool IsLocalExitPending()
+			{
+				const auto pPlayer = HouseClass::CurrentPlayer;
+				if (!pPlayer)
+					return false;
+
+				const auto isLocalExit = [pPlayer](const EventClass& event)
+				{
+					return event.Type == EventType::Exit
+						&& event.HouseIndex == pPlayer->ArrayIndex
+						&& (event.IsExecuted & 1) == 0;
+				};
+
+				for (int i = 0; i < EventClass::OutList.Count; ++i)
+				{
+					if (isLocalExit(EventClass::OutList[i]))
+						return true;
+				}
+
+				for (int i = 0; i < EventClass::DoList.Count; ++i)
+				{
+					if (isLocalExit(EventClass::DoList[i]))
+						return true;
+				}
+
+				return false;
+			}
+
+			void PrintControlMessageInternal(const wchar_t* pMessage)
+			{
+				MessageListClass::Instance.PrintMessage(
+					pMessage,
+					ControlMessageDurationFrames,
+					ColorScheme::White,
+					/* bSilent: */ true);
+			}
+
+			int GetRecordedFPS()
+			{
+				if (!ReplayState.HasPlaybackHeader)
+					return GetReplayFPSFromGameSpeed(0);
+
+				return GetReplayFPSFromGameSpeed(static_cast<int>(ReplayState.PlaybackHeader.RecordedGameSpeed));
+			}
+
+			int FindNearestLadderIndex(int fps)
+			{
+				int bestIndex = 0;
+				int bestDistance = std::abs(SpeedLadder[0] - fps);
+
+				for (int i = 1; i < SpeedLadderCount; ++i)
+				{
+					const int distance = std::abs(SpeedLadder[i] - fps);
+					if (distance < bestDistance)
+					{
+						bestDistance = distance;
+						bestIndex = i;
+					}
+				}
+
+				return bestIndex;
+			}
+
+			void ReportPlaybackSpeed()
+			{
+				const int fps = State.FrameRate;
+				const int recordedFPS = GetRecordedFPS();
+				const double multiplier = recordedFPS > 0 ? static_cast<double>(fps) / recordedFPS : 1.0;
+
+				wchar_t message[64];
+				swprintf_s(message, L"Replay speed: %.2fx (%d FPS)", multiplier, fps);
+				PrintControlMessage(message);
+			}
+
+		}
+
+		void OnPlaybackStarted(int playbackFPS, bool controlBarVisible)
+		{
+			State = PlaybackControlState {};
+			State.FrameRate = playbackFPS;
+			State.ControlBarVisible = controlBarVisible;
+		}
+
+		void OnPlaybackStopped()
+		{
+			// A new session must not inherit a pending resume or half-finished single step.
+			State = PlaybackControlState {};
+		}
+
+		void ResetFramePacing()
+		{
+			State.NextFrameDue = 0.0;
+		}
+
+		bool ShouldSkipRenderForDisplayRate()
+		{
+			if (!ReplayState.Playback || State.Paused || ReplaySystem::Seek::IsSeeking())
+				return false;
+
+			const auto* pConfig = GetConfig();
+			if (pConfig && !pConfig->ReplayRenderAtDisplayRate)
+				return false;
+
+			static int refreshRate = 0;
+			if (refreshRate == 0)
+			{
+				DEVMODEW mode {};
+				mode.dmSize = sizeof(mode);
+				refreshRate = EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1
+					? std::clamp(static_cast<int>(mode.dmDisplayFrequency), 30, 500)
+					: 60;
+			}
+
+			// At or below the display rate every frame can be shown, and skipping one on timer
+			// jitter would only make playback stutter.
+			if (State.FrameRate <= refreshRate)
+			{
+				State.NextRenderDue = 0.0;
+				return false;
+			}
+
+			const double interval = 1000.0 / refreshRate;
+			const double now = PlaybackClockMilliseconds();
+			if (State.NextRenderDue != 0.0 && now < State.NextRenderDue)
+				return true;
+
+			// Keep to the display's cadence, but do not try to catch up on draws a slow frame missed.
+			if (State.NextRenderDue == 0.0 || now - State.NextRenderDue > interval)
+				State.NextRenderDue = now;
+
+			State.NextRenderDue += interval;
+			return false;
+		}
+
+		bool HasPlaybackSpeed()
+		{
+			return State.FrameRate > 0;
+		}
+
+		void ApplyFramePacing()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			// A seek is not being watched, so it runs as fast as the machine manages. The engine
+			// still has to be told not to wait, which is what the two timers below do.
+			if (ReplaySystem::Seek::IsSeeking())
+			{
+				GameTimers::GameFrameTimer.TimeLeft = 0;
+				GameTimers::NetFrameTimer.TimeLeft = 0;
+				return;
+			}
+
+			if (State.FrameRate <= 0)
+				return;
+
+			const double frameMilliseconds = 1000.0 / State.FrameRate;
+			const double now = PlaybackClockMilliseconds();
+
+			if (now > 0.0)
+			{
+				if (State.NextFrameDue == 0.0
+					|| now > State.NextFrameDue + frameMilliseconds)
+				{
+					State.NextFrameDue = now;
+				}
+
+				for (double remaining = State.NextFrameDue - PlaybackClockMilliseconds();
+					remaining > 0.0;
+					remaining = State.NextFrameDue - PlaybackClockMilliseconds())
+				{
+					// Sleep(1) can overshoot by a whole scheduler tick, so it covers the bulk and the
+					// last couple of milliseconds are given up with Sleep(0).
+					Sleep(remaining > 2.0 ? 1 : 0);
+				}
+
+				State.NextFrameDue += frameMilliseconds;
+			}
+
+			GameTimers::GameFrameTimer.TimeLeft = 0;
+			GameTimers::NetFrameTimer.TimeLeft = 0;
+		}
+
+		bool IsPlaybackPaused()
+		{
+			return ReplayState.Playback && State.Paused;
+		}
+
+		void TogglePlaybackPause()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			State.SingleStepTargetFrame = -1;
+
+			// Pause/resume during a seek is the way out of it: stop where it has got to and play on.
+			if (Seek::CancelSeek())
+			{
+				PrintControlMessage(L"Seek stopped.");
+				return;
+			}
+
+			if (State.Paused)
+			{
+				State.ResumePending = true;
+				State.NextFrameDue = 0.0;
+				PrintControlMessage(L"Replay resumed.");
+			}
+			else
+			{
+				State.ResumePending = false;
+				SetPausedState(true);
+				PrintControlMessage(L"Replay paused.");
+			}
+		}
+
+		void PrintControlMessage(const wchar_t* pMessage)
+		{
+			PrintControlMessageInternal(pMessage);
+		}
+
+		void SetPlaybackPaused(bool paused)
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			State.SingleStepTargetFrame = -1;
+			if (paused)
+			{
+				State.ResumePending = false;
+				SetPausedState(true);
+			}
+			else if (State.Paused)
+			{
+				State.ResumePending = true;
+				State.NextFrameDue = 0.0;
+			}
+		}
+
+		void RequestSingleStep()
+		{
+			if (!ReplayState.Playback || Seek::IsSeeking())
+				return;
+
+			// Stepping freezes on the next frame.
+			State.SingleStepTargetFrame = static_cast<int>(Unsorted::CurrentFrame) + 1;
+			State.ResumePending = false;
+			SetPausedState(true);
+		}
+
+		void ServiceFrameStart()
+		{
+			if (!ReplayState.Playback)
+			{
+				State.SingleStepTargetFrame = -1;
+				State.ResumePending = false;
+				return;
+			}
+
+			// Only Queue_AI runs the Exit event the in-game menu queues, and a paused frame skips it, so
+			// a quit would otherwise wait for the viewer to unpause. Resume and let it go through.
+			if ((State.Paused || State.SingleStepTargetFrame >= 0) && IsLocalExitPending())
+			{
+				State.SingleStepTargetFrame = -1;
+				State.ResumePending = true;
+			}
+
+			if (State.ResumePending)
+			{
+				State.ResumePending = false;
+				SetPausedState(false);
+			}
+
+			if (State.SingleStepTargetFrame < 0)
+				return;
+
+			if (static_cast<int>(Unsorted::CurrentFrame) >= State.SingleStepTargetFrame)
+			{
+				State.SingleStepTargetFrame = -1;
+				SetPausedState(true);
+				return;
+			}
+
+			SetPausedState(false);
+		}
+
+		int PlaybackFPS()
+		{
+			return State.FrameRate > 0 ? State.FrameRate : GetRecordedFPS();
+		}
+
+		double PlaybackSpeedMultiplier()
+		{
+			const int recordedFPS = GetRecordedFPS();
+			if (recordedFPS <= 0)
+				return 1.0;
+
+			return static_cast<double>(PlaybackFPS()) / recordedFPS;
+		}
+
+		bool IsControlBarVisible()
+		{
+			return ReplayState.Playback && State.ControlBarVisible;
+		}
+
+		void ToggleControlBar()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			State.ControlBarVisible = !State.ControlBarVisible;
+		}
+
+		void ToggleLockedViewport()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			ReplayState.LockViewport = !ReplayState.LockViewport;
+			if (ReplayState.LockViewport)
+				ApplyLockedViewport();
+
+			PrintControlMessage(ReplayState.LockViewport
+				? L"Replay viewport locked."
+				: L"Replay viewport unlocked.");
+		}
+
+		void ToggleRecordedSelection()
+		{
+			if (!ReplayState.Playback)
+				return;
+
+			ReplayState.SelectUnits = !ReplayState.SelectUnits;
+			if (ReplayState.SelectUnits)
+				ApplyCurrentPlaybackSelection();
+
+			PrintControlMessage(ReplayState.SelectUnits
+				? L"Following recorded unit selection."
+				: L"Recorded unit selection disabled.");
+		}
+
+		void StepPlaybackSpeed(int direction)
+		{
+			if (!ReplayState.Playback || direction == 0)
+				return;
+
+			const int currentIndex = FindNearestLadderIndex(State.FrameRate);
+			const int nextIndex = std::clamp(currentIndex + (direction > 0 ? 1 : -1), 0, SpeedLadderCount - 1);
+
+			State.FrameRate = SpeedLadder[nextIndex];
+			State.NextFrameDue = 0.0;
+			ReportPlaybackSpeed();
+		}
+
+		void RenderPausedFrame()
+		{
+			if (!TacticalClass::Instance)
+				return;
+
+			TacticalClass::Instance->Update();
+			MapClass::Instance.Render();
+
+			// TechnoClass::AI clears the hover flag every frame (0x6F9E65) and GScreenClass::Input sets
+			// it again for whatever is still under the cursor. A paused frame skips LogicClass::AI, so
+			// without this every health bar the cursor passes over stays up. Clearing it after both of
+			// this iteration's draws, rather than where the logic tick would, keeps the bar from
+			// flickering between them.
+			for (auto const pTechno : TechnoClass::Array)
+				pTechno->IsMouseHovering = false;
+		}
+
+		int GetPlaybackGameSpeedIndex()
+		{
+			for (int gameSpeedIndex = 0; gameSpeedIndex <= MaxGameSpeedIndex; ++gameSpeedIndex)
+			{
+				if (GetReplayFPSFromGameSpeed(gameSpeedIndex) <= State.FrameRate)
+					return gameSpeedIndex;
+			}
+
+			return MaxGameSpeedIndex;
+		}
+
+		void SetPlaybackGameSpeedIndex(int gameSpeedIndex)
+		{
+			State.FrameRate = GetReplayFPSFromGameSpeed(std::clamp(gameSpeedIndex, 0, MaxGameSpeedIndex));
+			State.NextFrameDue = 0.0;
+		}
+	}
+}

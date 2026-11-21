@@ -17,6 +17,7 @@
 *  along with this program.If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <Replay/ReplaySystem.h>
 #include <Spawner/Spawner.h>
 #include <Utilities/Macro.h>
 #include <HouseClass.h>
@@ -104,8 +105,10 @@ DEFINE_HOOK(0x656C1B, RadarClass_ChangeState_SkipInitialObserverActivationSound,
 
 DEFINE_HOOK(0x5533E0, LoadProgressMgr__Draw_SetBackground, 0x5)
 {
+	enum { UseObserverScreen = 0x5533FD };
+
 	return Game::ObserverMode
-		? 0x5533EF
+		? UseObserverScreen
 		: 0;
 }
 
@@ -157,12 +160,12 @@ DEFINE_HOOK(0x642BC3, ProgressScreenClass__GetPlayerColorSchemes, 0x5)
 		: NotAllowObserver;
 }
 
-// Enable observer sidebar in skirmish
+// Enable observer sidebar in skirmish, and when a campaign replay is watched as a spectator
 DEFINE_HOOK(0x6A557A, SidebarClass__InitIO, 0x5)
 {
 	enum { AllowObserver = 0x6A558D, NotAllowObserver = 0x6A5830 };
 
-	return !SessionClass::IsCampaign()
+	return !SessionClass::IsCampaign() || ReplaySystem::IsSpectatorPlayback()
 		? AllowObserver
 		: NotAllowObserver;
 }
@@ -175,7 +178,11 @@ bool inline ShowHouseOnObserverSidebar(HouseClass* pHouse)
 	if (pHouse->Type->MultiplayPassive)
 		return false;
 
-	const bool bShowAI = (Spawner::Enabled && Spawner::GetConfig()->Observer_ShowAIOnSidebar);
+	// A campaign has no human house but the recording player's, so a spectated campaign replay
+	// would otherwise show an empty sidebar
+	const bool bShowAI = (Spawner::Enabled && Spawner::GetConfig()->Observer_ShowAIOnSidebar)
+		|| (SessionClass::IsCampaign() && ReplaySystem::IsSpectatorPlayback());
+
 	if (!bShowAI && !pHouse->IsHumanPlayer)
 		return false;
 
@@ -205,8 +212,13 @@ DEFINE_HOOK(0x6A57E2, SidebarClass__InitIO_ShowHouseOnObserverSidebar2, 0xA)
 		: DontDraw;
 }
 
-// Don't set LightGrey ColorScheme for failed observers
-DEFINE_JUMP(LJMP, 0x6A91F7, 0x6A9212); // SidebarClass_StripClass_AI
+// A listed house that is the observer - a defeated player who became one, or the player a spectator
+// replay is watched from - is coloured like the others: Grey once defeated, otherwise its own colour,
+// not the observer's LightGrey. Both the colour StripClass::AI compares against and the one it stores
+// change, or the two would differ and the list would redraw every frame.
+DEFINE_JUMP(LJMP, 0x6A5694, 0x6A56AD); // SidebarClass::Init_IO
+DEFINE_JUMP(LJMP, 0x6A9142, 0x6A915B); // SidebarClass::StripClass::AI, the compare
+DEFINE_JUMP(LJMP, 0x6A91EE, 0x6A9208); // SidebarClass::StripClass::AI, the update
 
 #pragma endregion Show house on Observer sidebar
 

@@ -22,9 +22,13 @@
     <ClCompile Include="$(ThisDir)\src\Main.Config.cpp" />
     <ClCompile Include="$(ThisDir)\src\Main.Ext.cpp" />
     <ClCompile Include="$(ThisDir)\src\Main.Hook.cpp" />
+    <!-- Commands -->
+    <ClCompile Include="$(ThisDir)\src\Commands\Commands.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Commands\ReplayCommands.cpp" />
     <!-- Ext -->
     <ClCompile Include="$(ThisDir)\src\Ext\Event\Body.cpp" />
     <ClCompile Include="$(ThisDir)\src\Ext\INIClass\Body.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Ext\Session\Body.cpp" />
     <!-- CnCNetYR -->
     <ClCompile Include="$(ThisDir)\src\CnCNetYR\AppIcon.cpp" />
     <ClCompile Include="$(ThisDir)\src\CnCNetYR\Misc.cpp" />
@@ -32,12 +36,15 @@
     <ClCompile Include="$(ThisDir)\src\CnCNetYR\Ra2Mode.cpp" />
     <!-- Misc -->
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.AIDifficultyRules.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.ClampTacticalPos.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.CommonCrashes.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.Desyncs.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.ExceptionCatch.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.IsoMapPack5Limit.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.LocalInterfaces.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.PlanningMode.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Misc\Bugfixes.SaveLoad.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\CopyProtection.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\DisableEdgeScrolling.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\GameSpeed.cpp" />
@@ -53,12 +60,58 @@
     <ClCompile Include="$(ThisDir)\src\Misc\SkipCreateAppMutex.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\SkipScoreScreen.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\VideoMode.cpp" />
+    <!-- Perf -->
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.Blitters.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.CellShadow.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.FillRectTrans.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.HealthPips.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.LightRedraw.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.MapRevealer.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.Spotlight.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.TileBlit.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.VoxelShadowCache.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.VoxelShadowMask.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Perf\Perf.ZAdjust.cpp" />
+    <!-- Replay -->
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.Serialization.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayControls.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayFrameCodec.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayFile.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayFile.Metadata.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayOverlay.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.AresParticles.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.Planning.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.Map.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.Objects.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayKeyframeState.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplaySideChannels.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplaySideChannels.Hook.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplaySeek.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayCanonical.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayStatistics.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplaySystem.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplaySystem.Hook.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Replay\ReplayStream.cpp" />
+    <!-- Vendored -->
+    <ClCompile Include="$(ThisDir)\src\Vendor\miniz\miniz.c">
+      <PreprocessorDefinitions>MINIZ_NO_STDIO;MINIZ_NO_TIME;MINIZ_NO_ARCHIVE_APIS;MINIZ_NO_ZLIB_APIS;MINIZ_NO_ZLIB_COMPATIBLE_NAMES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
     <!-- Misc/Blowfish -->
     <ClCompile Include="$(ThisDir)\src\Misc\Blowfish\blowfish.cpp" />
     <ClCompile Include="$(ThisDir)\src\Misc\Blowfish\Hooks.Blowfish.cpp" />
     <!-- Spawner -->
     <ClCompile Include="$(ThisDir)\src\Spawner\CustomMixes.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\FrameGate.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\KickAgreement.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\MPStatsFix.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\FastRetransmit.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\NetDiagnostics.cpp" />
     <ClCompile Include="$(ThisDir)\src\Spawner\NetHack.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\PacketRedundancy.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\PacketBundling.cpp" />
+    <ClCompile Include="$(ThisDir)\src\Spawner\RenderSkip.cpp" />
     <ClCompile Include="$(ThisDir)\src\Spawner\ProtocolZero.cpp" />
     <ClCompile Include="$(ThisDir)\src\Spawner\ProtocolZero.Hook.cpp" />
     <ClCompile Include="$(ThisDir)\src\Spawner\ProtocolZero.LatencyLevel.cpp" />
@@ -71,6 +124,9 @@
     <!-- UI -->
     <ClCompile Include="$(ThisDir)\src\UI\Hooks.DialogsEscape.cpp" />
     <ClCompile Include="$(ThisDir)\src\UI\Hooks.SaveButton.cpp" />
+    <ClCompile Include="$(ThisDir)\src\UI\DesyncDialog.cpp" />
+    <ClCompile Include="$(ThisDir)\src\UI\DesyncDialog.Hook.cpp" />
+    <ResourceCompile Include="$(ThisDir)\src\UI\DesyncDialog.rc" />
     <!-- Utilities -->
     <ClCompile Include="$(ThisDir)\src\Utilities\Debug.cpp" />
     <ClCompile Include="$(ThisDir)\src\Utilities\Patch.cpp" />
@@ -81,17 +137,52 @@
     <ClInclude Include="$(ThisDir)\src\version.h" />
     <ClInclude Include="$(ThisDir)\src\Main.h" />
     <ClInclude Include="$(ThisDir)\src\Main.Config.h" />
+    <!-- Commands -->
+    <ClInclude Include="$(ThisDir)\src\Commands\Commands.h" />
+    <ClInclude Include="$(ThisDir)\src\Commands\ReplayCommands.h" />
     <!-- Ext -->
     <ClInclude Include="$(ThisDir)\src\Ext\Event\Body.h" />
     <ClInclude Include="$(ThisDir)\src\Ext\INIClass\Body.h" />
+    <ClInclude Include="$(ThisDir)\src\Ext\Session\Body.h" />
     <!-- CnCNetYR -->
     <ClInclude Include="$(ThisDir)\src\CnCNetYR\Ra2Mode.h" />
     <!-- Misc -->
+    <ClInclude Include="$(ThisDir)\src\UI\DesyncDialog.h" />
+    <ClInclude Include="$(ThisDir)\src\UI\DesyncDialog.Resource.h" />
     <ClInclude Include="$(ThisDir)\src\Misc\Bugfixes.Desyncs.h" />
+    <!-- Perf -->
+    <ClInclude Include="$(ThisDir)\src\Perf\Perf.h" />
+    <!-- Replay -->
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayControls.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayFrameCodec.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayFile.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayFormat.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayOverlay.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayKeyframeState.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayKeyframeState.Internal.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplaySideChannels.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplaySeek.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayCanonical.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayStatistics.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayCheckpointCodec.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayRecordedCheckpoint.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplaySystem.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplaySystem.Internal.h" />
+    <ClInclude Include="$(ThisDir)\src\Replay\ReplayStream.h" />
+    <!-- Vendored -->
+    <ClInclude Include="$(ThisDir)\src\Vendor\miniz\miniz.h" />
     <!-- Misc/Blowfish -->
     <ClInclude Include="$(ThisDir)\src\Misc\Blowfish\blowfish.h" />
     <!-- Spawner -->
+    <ClInclude Include="$(ThisDir)\src\Spawner\FrameGate.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\GlobalPacketExt.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\KickAgreement.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\FastRetransmit.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\NetDiagnostics.h" />
     <ClInclude Include="$(ThisDir)\src\Spawner\NetHack.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\PacketRedundancy.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\PacketBundling.h" />
+    <ClInclude Include="$(ThisDir)\src\Spawner\RenderSkip.h" />
     <ClInclude Include="$(ThisDir)\src\Spawner\ProtocolZero.h" />
     <ClInclude Include="$(ThisDir)\src\Spawner\ProtocolZero.LatencyLevel.h" />
     <ClInclude Include="$(ThisDir)\src\Spawner\Spawner.Config.h" />

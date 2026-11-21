@@ -19,6 +19,9 @@
 
 #include "Spawner.h"
 #include "NetHack.h"
+#include <Replay/ReplaySeek.h>
+#include <Replay/ReplaySystem.h>
+#include <UI/DesyncDialog.h>
 
 #include <HouseClass.h>
 #include <ColorScheme.h>
@@ -73,14 +76,18 @@ DEFINE_HOOK(0x6BD7C5, WinMain_SpawnerInit, 0x6)
 			Patch::Apply_LJMP(0x55D0DF, 0x55D0E8); // AuxLoop_Cooperative_EndgameCrashFix
 		}
 
-		// Set ConnTimeout
+		// Set ConnTimeout, for the wait at the start and the one restarted whenever anyone's loading
+		// progress changes (otherwise a fixed 7200 ticks, so a player who never loads held everyone for two minutes)
 		Patch::Apply_TYPED<int>(0x6843C7, { Spawner::GetConfig()->ConnTimeout }); // Scenario_Load_Wait
+		Patch::Apply_TYPED<int>(0x684484, { Spawner::GetConfig()->ConnTimeout }); // Scenario_Load_Wait, on progress
+
+		// While the game waits for a player, the FRAMESYNC that tells them where it is goes out only
+		// every 180 ticks (3 s). Nothing else is sent while stalled, so once a loss burst ends a
+		// stalled pair could sit for up to 3 s more. Resend every 10 ticks instead; it is a few bytes.
+		Patch::Apply_TYPED<int>(0x648061, { 10 }); // Queue_AI_Multiplayer, Wait_For_Players resend_delta
 
 		// Show GameMode in DiplomacyDialog in Skirmish
 		Patch::Apply_LJMP(0x658117, 0x658126); // RadarClass_DiplomacyDialog
-
-		// Leaves bottom bar closed for losing players during last game frames
-		Patch::Apply_LJMP(0x6D1639, 0x6D1640); // TabClass_6D1610
 
 		// Allow surrendering to observe even when only one human is still playing
 		Patch::Apply_LJMP(0x4F1993, 0x4F19C4); // AbortMissionDialog_Init_SkipHumanCount
@@ -252,6 +259,21 @@ DEFINE_HOOK(0x4FC57C, HouseClass__MPlayerDefeated_CheckAliveAndHumans, 0x7)
 	return FinishMatch;
 }
 
+// Leaves the bottom bar closed for a defeated local player. When the local player loses, the game
+// closes the bar (Toggle_Thumb) and sets a flag (0x824410) that nothing clears, so every later defeat
+// that ends the match reopens it (Init_Thumb). Each reopen links the command bar buttons into the
+// gadget list again, so the list loops back on itself and the game hangs - e.g. when the local player
+// and another house are both defeated in the last frames. Skipping it is the engine's own path when
+// the flag is clear. The hook above returns here too when the match ends.
+DEFINE_HOOK(0x4FC591, HouseClass__MPlayerDefeated_SkipThumbRestore, 0x5)
+{
+	enum { SkipThumbRestore = 0x4FC5AA };
+
+	return (Spawner::Enabled || ReplaySystem::IsSpectatorPlayback())
+		? SkipThumbRestore
+		: 0;
+}
+
 #pragma endregion MPlayerDefeated
 
 #pragma region Save&Load
@@ -263,8 +285,13 @@ DEFINE_HOOK_AGAIN(0x60D407, SomeFunc_InterceptMainLoop, 0x5);
 DEFINE_HOOK_AGAIN(0x608206, SomeFunc_InterceptMainLoop, 0x5);
 DEFINE_HOOK(0x48CE8A, SomeFunc_InterceptMainLoop, 0x5)
 {
+	// A save the game master chose after a desync is loaded between frames.
+	if (DesyncDialog.Has_Pending_Reload())
+		DesyncDialog.Perform_Pending_Reload();
+
 	//  Main loop.
 	Game::MainLoop();
+	ReplaySystem::Seek::SetRecordingSimulationInProgress(false);
 
 	// After loop.
 	if (Spawner::Enabled)
@@ -278,6 +305,7 @@ DEFINE_HOOK(0x52DAEF, Game_Start_ResetGlobal, 0x5)
 	Spawner::DoSave = false;
 	Spawner::NextAutoSaveFrame = -1;
 	Spawner::NextAutoSaveNumber = 0;
+	ReplaySystem::OnGameStartReset();
 	return 0;
 }
 
@@ -310,6 +338,21 @@ DEFINE_HOOK(0x67E6DA, LoadGame_AfterInit, 0x6)
 {
 	BeaconManagerClass::Instance.LoadArt();
 	return 0;
+}
+
+// Loading a multiplayer save starts at full progress, so SessionClass's progress callback sends
+// every update as a guaranteed message, then waits up to four seconds each time for the global send
+// queue to drain to five. Whoever starts loading first sends before the others are listening, and
+// the others stop acknowledging global messages once they reach the frame sync, so the first player
+// stalls on every callback - 10 to 20 seconds - while everyone else waits. The messages only drive
+// the loading bars and stay queued; the frame sync is what holds the start, so skip the wait.
+DEFINE_HOOK(0x69B01A, SessionClass_Callback_NoProgressWaitOnLoad, 0x5)
+{
+	enum { SkipWait = 0x69B148 };
+
+	return Spawner::Enabled && Spawner::GetConfig()->LoadSaveGame
+		? SkipWait
+		: 0;
 }
 
 #pragma endregion

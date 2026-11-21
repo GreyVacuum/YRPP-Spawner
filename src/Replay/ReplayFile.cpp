@@ -1,0 +1,601 @@
+/**
+*  yrpp-spawner
+*
+*  Copyright(C) 2026-present CnCNet
+*
+*  This program is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  This program is distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with this program.If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "ReplayFile.h"
+#include "ReplayCheckpointCodec.h"
+
+#include <Utilities/Debug.h>
+#include <Vendor/miniz/miniz.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <utility>
+
+namespace Replay
+{
+	namespace
+	{
+		// Forced commits stall the game thread, so they run less often than sync flushes.
+		constexpr uint64_t DiskFlushIntervalBytes = 50ull * 1024 * 1024;
+
+		bool WriteRawToHandle(HANDLE file, const void* data, size_t size)
+		{
+			if (file == INVALID_HANDLE_VALUE)
+				return false;
+
+			DWORD bytesWritten = 0;
+			return WriteFile(file, data, static_cast<DWORD>(size), &bytesWritten, nullptr)
+				&& bytesWritten == static_cast<DWORD>(size);
+		}
+
+		bool ReadRawFromHandle(HANDLE file, void* buffer, size_t size)
+		{
+			if (file == INVALID_HANDLE_VALUE)
+				return false;
+
+			DWORD bytesRead = 0;
+			return ReadFile(file, buffer, static_cast<DWORD>(size), &bytesRead, nullptr)
+				&& bytesRead == static_cast<DWORD>(size);
+		}
+
+		ReplayOpenFailure ClassifyReplayHeader(const ReplayHeader& header)
+		{
+			if (header.Magic != ReplayMagic)
+				return ReplayOpenFailure::NotAReplay;
+
+			// A shorter header than this build's is missing fields it reads; a longer one is fine, and is
+			// the whole point of HeaderSize.
+			if (header.HeaderSize < sizeof(ReplayHeader))
+				return ReplayOpenFailure::Malformed;
+
+			if (header.UniqueIDCounter < 0
+				|| header.RandomNext1 < 0 || header.RandomNext1 >= 250
+				|| header.RandomNext2 < 0 || header.RandomNext2 >= 250
+				|| header.SpawnIniSize > MaxEmbeddedFileBytes
+				|| header.SpawnMapSize > MaxEmbeddedFileBytes
+				|| header.SpawnIniRawSize > MaxEmbeddedFileBytes
+				|| header.SpawnMapRawSize > MaxEmbeddedFileBytes
+				|| (header.SpawnIniSize == 0) != (header.SpawnIniRawSize == 0)
+				|| (header.SpawnMapSize == 0) != (header.SpawnMapRawSize == 0)
+				|| !IsReplayGameSpeedIndexValid(header.RecordedGameSpeed))
+			{
+				return ReplayOpenFailure::Malformed;
+			}
+
+			return ReplayOpenFailure::None;
+		}
+
+		bool ReadReplayHeaderFromHandle(HANDLE file, ReplayHeader& outHeader, ReplayOpenFailure& outFailure)
+		{
+			outHeader = {};
+
+			if (!ReadRawFromHandle(file, &outHeader, sizeof(outHeader)))
+			{
+				outFailure = ReplayOpenFailure::Unreadable;
+				return false;
+			}
+
+			outFailure = ClassifyReplayHeader(outHeader);
+			return outFailure == ReplayOpenFailure::None;
+		}
+
+		bool ReadReplayHeaderFromHandle(HANDLE file, ReplayHeader& outHeader)
+		{
+			ReplayOpenFailure failure = ReplayOpenFailure::None;
+			return ReadReplayHeaderFromHandle(file, outHeader, failure);
+		}
+
+	}
+
+	const char* DescribeReplayOpenFailure(ReplayOpenFailure failure)
+	{
+		switch (failure)
+		{
+		case ReplayOpenFailure::NotAReplay:
+			return "the file is not a replay";
+		case ReplayOpenFailure::Malformed:
+			return "the replay header is damaged";
+		case ReplayOpenFailure::Unreadable:
+		default:
+			return "the replay could not be read";
+		}
+	}
+
+	std::wstring Utf8ToWide(const char* text)
+	{
+		const int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+		if (length <= 1)
+			return std::wstring();
+
+		std::wstring wide(static_cast<size_t>(length), L'\0');
+		MultiByteToWideChar(CP_UTF8, 0, text, -1, wide.data(), length);
+		wide.resize(static_cast<size_t>(length) - 1);
+		return wide;
+	}
+
+	bool ReadReplayHeaderFromPath(const char* replayPath, ReplayHeader& outHeader)
+	{
+		HANDLE file = CreateFileW(
+			Utf8ToWide(replayPath).c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
+
+		if (file == INVALID_HANDLE_VALUE)
+			return false;
+
+		const bool ok = ReadReplayHeaderFromHandle(file, outHeader);
+		CloseHandle(file);
+		return ok;
+	}
+
+	File::~File()
+	{
+		this->Close();
+	}
+
+	void File::Close()
+	{
+		this->Writer.Reset();
+		this->Reader.Reset();
+		this->PlaybackStreamOffset = 0;
+		this->CheckpointArchiveOffset = 0;
+		this->CheckpointArchiveSize = 0;
+		this->BytesAtLastDiskFlush = 0;
+
+		if (this->Handle != INVALID_HANDLE_VALUE)
+		{
+			FlushFileBuffers(this->Handle);
+			CloseHandle(this->Handle);
+			this->Handle = INVALID_HANDLE_VALUE;
+		}
+	}
+
+	bool File::OpenRecording(const char* outputPath)
+	{
+		this->Close();
+
+		this->Handle = CreateFileW(
+			Utf8ToWide(outputPath).c_str(),
+			GENERIC_WRITE,
+			FILE_SHARE_READ,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
+
+		if (this->Handle == INVALID_HANDLE_VALUE)
+		{
+			// WriteInitialReplayFile has just written this file. Recreating it would start the deflate
+			// stream at offset 0 and produce a headerless file no reader can parse.
+			Debug::Log("[Replay] Could not reopen the replay file for recording: %s\n", outputPath);
+			return false;
+		}
+
+		SetFilePointer(this->Handle, 0, nullptr, FILE_END);
+
+		// Start the frame deflate stream; optional checkpoints follow after FinishRecording.
+		if (!this->Writer.Start(this->Handle))
+		{
+			Debug::Log("[Replay] Failed to start the compressed replay stream.\n");
+			this->Close();
+			return false;
+		}
+
+		this->BytesAtLastDiskFlush = 0;
+		return true;
+	}
+
+	bool File::OpenPlayback(const char* replayPath, ReplayOpenFailure& outFailure)
+	{
+		this->Close();
+		outFailure = ReplayOpenFailure::None;
+
+		this->Handle = CreateFileW(
+			Utf8ToWide(replayPath).c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
+
+		if (this->Handle == INVALID_HANDLE_VALUE)
+		{
+			outFailure = ReplayOpenFailure::Unreadable;
+			return false;
+		}
+
+		ReplayHeader header {};
+		if (!ReadReplayHeaderFromHandle(this->Handle, header, outFailure))
+		{
+			this->Close();
+			return false;
+		}
+
+		// The sizes come straight off disk, so check them against the file before seeking.
+		const uint64_t payloadSize = static_cast<uint64_t>(header.SpawnIniSize) + header.SpawnMapSize;
+		const uint64_t streamOffset = static_cast<uint64_t>(header.HeaderSize) + payloadSize;
+
+		LARGE_INTEGER fileSize {};
+		if (!GetFileSizeEx(this->Handle, &fileSize)
+			|| streamOffset > static_cast<uint64_t>(fileSize.QuadPart))
+		{
+			Debug::Log("[Replay] Replay declares embedded file sizes that do not fit the file.\n");
+			outFailure = ReplayOpenFailure::Malformed;
+			this->Close();
+			return false;
+		}
+
+		LARGE_INTEGER streamStart {};
+		streamStart.QuadPart = static_cast<LONGLONG>(streamOffset);
+
+		if (!SetFilePointerEx(this->Handle, streamStart, nullptr, FILE_BEGIN))
+		{
+			outFailure = ReplayOpenFailure::Unreadable;
+			this->Close();
+			return false;
+		}
+
+		// The frame stream is always deflated; the header and the two INIs above it never are.
+		if (!this->Reader.Start(this->Handle))
+		{
+			Debug::Log("[Replay] Failed to start reading the compressed replay stream.\n");
+			outFailure = ReplayOpenFailure::Unreadable;
+			this->Close();
+			return false;
+		}
+
+		// Kept so a seek can restart the decompressor here. See ReplaySeek.h.
+		this->PlaybackStreamOffset = streamOffset;
+		this->CheckpointArchiveOffset = header.CheckpointArchiveOffset;
+		this->CheckpointArchiveSize = header.CheckpointArchiveSize;
+		return true;
+	}
+
+	bool File::Write(const void* data, size_t size)
+	{
+		if (this->Writer.IsActive())
+			return this->Writer.Write(data, size);
+
+		return WriteRawToHandle(this->Handle, data, size);
+	}
+
+	bool File::Read(void* buffer, size_t size)
+	{
+		if (this->Reader.IsActive())
+			return this->Reader.Read(buffer, size);
+
+		return ReadRawFromHandle(this->Handle, buffer, size);
+	}
+
+	bool File::RestartPlaybackStream()
+	{
+		if (!this->IsOpen())
+			return false;
+
+		LARGE_INTEGER streamStart {};
+		streamStart.QuadPart = static_cast<LONGLONG>(this->PlaybackStreamOffset);
+		return SetFilePointerEx(this->Handle, streamStart, nullptr, FILE_BEGIN)
+			&& this->Reader.Start(this->Handle);
+	}
+
+	bool File::SyncFlush()
+	{
+		if (!this->Writer.IsActive())
+			return true;
+
+		if (!this->Writer.SyncFlush())
+			return false;
+
+		// Committing to the disk is far more expensive, so it stays on a rare byte-count schedule.
+		const uint64_t written = this->Writer.CompressedBytesWritten();
+		if (written - this->BytesAtLastDiskFlush >= DiskFlushIntervalBytes)
+		{
+			FlushFileBuffers(this->Handle);
+			this->BytesAtLastDiskFlush = written;
+		}
+
+		return true;
+	}
+
+	bool File::FinishRecording()
+	{
+		return !this->Writer.IsActive() || this->Writer.Finish();
+	}
+
+	bool File::AppendSection(const std::vector<unsigned char>& bytes, uint32_t maxBytes, LONGLONG offsetField)
+	{
+		if (bytes.empty() || bytes.size() > maxBytes)
+			return false;
+
+		uint64_t sectionStart = 0;
+		if (!this->EndOffset(sectionStart) || !WriteRawToHandle(this->Handle, bytes.data(), bytes.size()))
+			return false;
+
+		return this->StampSection(offsetField, sectionStart, static_cast<uint32_t>(bytes.size()));
+	}
+
+	// Points the header at a section, which must already be entirely on disk.
+	bool File::StampSection(LONGLONG offsetField, uint64_t sectionOffset, uint32_t sectionSize)
+	{
+		LARGE_INTEGER fieldOffset {}, zero {};
+		fieldOffset.QuadPart = offsetField;
+		const bool ok = SetFilePointerEx(this->Handle, fieldOffset, nullptr, FILE_BEGIN)
+			&& WriteRawToHandle(this->Handle, &sectionOffset, sizeof(sectionOffset))
+			&& WriteRawToHandle(this->Handle, &sectionSize, sizeof(sectionSize));
+
+		SetFilePointerEx(this->Handle, zero, nullptr, FILE_END);
+		return ok;
+	}
+
+	bool File::EndOffset(uint64_t& offset)
+	{
+		LARGE_INTEGER zero {}, end {};
+		if (!SetFilePointerEx(this->Handle, zero, &end, FILE_END))
+			return false;
+
+		offset = static_cast<uint64_t>(end.QuadPart);
+		return true;
+	}
+
+	bool File::WriteAt(uint64_t offset, const void* data, size_t size)
+	{
+		LARGE_INTEGER position {}, zero {};
+		position.QuadPart = static_cast<LONGLONG>(offset);
+		const bool ok = SetFilePointerEx(this->Handle, position, nullptr, FILE_BEGIN)
+			&& WriteRawToHandle(this->Handle, data, size);
+
+		SetFilePointerEx(this->Handle, zero, nullptr, FILE_END);
+		return ok;
+	}
+
+	bool File::TruncateTo(uint64_t offset)
+	{
+		LARGE_INTEGER position {};
+		position.QuadPart = static_cast<LONGLONG>(offset);
+		return SetFilePointerEx(this->Handle, position, nullptr, FILE_BEGIN)
+			&& SetEndOfFile(this->Handle);
+	}
+
+	int File::WriteCheckpointArchive(const std::vector<CheckpointSource>& sources, uint32_t maxBytes, int probes)
+	{
+		static_assert(offsetof(ReplayHeader, CheckpointArchiveSize)
+			== offsetof(ReplayHeader, CheckpointArchiveOffset) + sizeof(uint64_t),
+			"The checkpoint archive fields are stamped back to back and have to stay adjacent");
+
+		uint64_t archiveStart = 0;
+		uint32_t count = 0;
+		if (!this->IsOpen() || sources.empty() || !this->EndOffset(archiveStart)
+			|| !WriteRawToHandle(this->Handle, &count, sizeof(count)))
+		{
+			return 0;
+		}
+
+		maxBytes = std::min(maxBytes, MaxCheckpointArchiveBytes);
+		for (const auto& source : sources)
+		{
+			uint64_t entryStart = 0, entryEnd = 0;
+			if (!this->EndOffset(entryStart))
+				break;
+
+			if (!this->AppendCheckpoint(source, probes) || !this->EndOffset(entryEnd))
+			{
+				Debug::Log("[Replay] Could not embed the save at frame %d.\n", source.Frame);
+				if (!this->TruncateTo(entryStart))
+					break;
+				continue;
+			}
+
+			if (entryEnd - archiveStart > maxBytes)
+			{
+				Debug::Log("[Replay] Left out the save at frame %d: it would take the checkpoints past %u bytes.\n",
+					source.Frame, maxBytes);
+				if (!this->TruncateTo(entryStart))
+					break;
+				continue;
+			}
+
+			++count;
+		}
+
+		uint64_t archiveEnd = 0;
+		if (count == 0 || !this->EndOffset(archiveEnd)
+			|| !this->WriteAt(archiveStart, &count, sizeof(count))
+			|| !this->StampSection(offsetof(ReplayHeader, CheckpointArchiveOffset), archiveStart,
+				static_cast<uint32_t>(archiveEnd - archiveStart)))
+		{
+			this->TruncateTo(archiveStart);
+			return 0;
+		}
+
+		return static_cast<int>(count);
+	}
+
+	bool File::AppendCheckpoint(const CheckpointSource& source, int probes)
+	{
+		struct Input
+		{
+			HANDLE Handle = INVALID_HANDLE_VALUE;
+			uint32_t Size = 0;
+			~Input() { if (this->Handle != INVALID_HANDLE_VALUE) CloseHandle(this->Handle); }
+		};
+
+		Input save, sidecar;
+		for (auto [pInput, pPath] : { std::pair { &save, &source.Save }, std::pair { &sidecar, &source.Sidecar } })
+		{
+			pInput->Handle = CreateFileW(pPath->c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+				FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+			LARGE_INTEGER size {};
+			if (pInput->Handle == INVALID_HANDLE_VALUE || !GetFileSizeEx(pInput->Handle, &size)
+				|| size.QuadPart < 0 || size.QuadPart > static_cast<LONGLONG>(CheckpointCodec::MaxBytes))
+			{
+				return false;
+			}
+			pInput->Size = static_cast<uint32_t>(size.QuadPart);
+		}
+
+		// The payload is what CheckpointCodec::Fields(save, sidecar) produces - each as a uint32 length
+		// and its bytes - and playback bounds the whole of it.
+		const uint64_t rawSize = 8ull + save.Size + sidecar.Size;
+		if (save.Size == 0 || rawSize > CheckpointCodec::MaxBytes)
+			return false;
+
+		// Frame and raw size, then the CRC and compressed size, which are filled in once known.
+		uint64_t entryStart = 0;
+		const uint32_t index[4] = { static_cast<uint32_t>(source.Frame), static_cast<uint32_t>(rawSize), 0, 0 };
+		if (!this->EndOffset(entryStart) || !WriteRawToHandle(this->Handle, index, sizeof(index)))
+			return false;
+
+		DeflateWriter deflate;
+		if (!deflate.Start(this->Handle, probes))
+			return false;
+
+		mz_ulong crc = MZ_CRC32_INIT;
+		auto emit = [&](const void* data, size_t size)
+		{
+			crc = mz_crc32(crc, static_cast<const unsigned char*>(data), size);
+			return deflate.Write(data, size);
+		};
+
+		std::vector<unsigned char> buffer(64 * 1024);
+		for (Input* pInput : { &save, &sidecar })
+		{
+			if (!emit(&pInput->Size, sizeof(pInput->Size)))
+				return false;
+
+			for (uint32_t left = pInput->Size; left > 0;)
+			{
+				DWORD read = 0;
+				const DWORD wanted = std::min<DWORD>(left, static_cast<DWORD>(buffer.size()));
+				// A file that shrank since it was sized would leave its length prefix wrong.
+				if (!ReadFile(pInput->Handle, buffer.data(), wanted, &read, nullptr) || read == 0
+					|| !emit(buffer.data(), read))
+				{
+					return false;
+				}
+				left -= read;
+			}
+		}
+
+		if (!deflate.Finish())
+			return false;
+
+		const uint64_t compressedSize = deflate.CompressedBytesWritten();
+		const uint32_t tail[2] = { static_cast<uint32_t>(crc), static_cast<uint32_t>(compressedSize) };
+		return compressedSize > 0 && compressedSize <= CheckpointCodec::MaxBytes
+			&& this->WriteAt(entryStart + sizeof(uint32_t) * 2, tail, sizeof(tail));
+	}
+
+	bool File::WriteStatisticsSection(const std::vector<unsigned char>& bytes)
+	{
+		static_assert(offsetof(ReplayHeader, StatisticsSize)
+			== offsetof(ReplayHeader, StatisticsOffset) + sizeof(uint64_t),
+			"The statistics fields are stamped back to back and have to stay adjacent");
+
+		if (bytes.empty() || bytes.size() > MaxStatisticsSectionBytes)
+			return false;
+
+		// Compressed in one go: it is a few hundred kilobytes at most, written as the game closes.
+		size_t compressedSize = 0;
+		void* const compressed = tdefl_compress_mem_to_heap(bytes.data(), bytes.size(), &compressedSize,
+			TDEFL_DEFAULT_MAX_PROBES);
+		if (!compressed)
+			return false;
+
+		const auto* pCompressed = static_cast<const unsigned char*>(compressed);
+		const std::vector<unsigned char> stored(pCompressed, pCompressed + compressedSize);
+		mz_free(compressed);
+
+		// The inflated size first, so the section never points at data whose size is not yet known.
+		const uint32_t rawSize = static_cast<uint32_t>(bytes.size());
+		return this->WriteAt(offsetof(ReplayHeader, StatisticsRawSize), &rawSize, sizeof(rawSize))
+			&& this->AppendSection(stored, MaxStatisticsSectionBytes, offsetof(ReplayHeader, StatisticsOffset));
+	}
+
+	bool File::ReadCheckpointArchive(std::vector<unsigned char>& bytes)
+	{
+		bytes.clear();
+
+		// No saves were captured, or the recording never finalized.
+		if (this->CheckpointArchiveOffset == 0 && this->CheckpointArchiveSize == 0)
+			return true;
+
+		// The archive starts after the frame stream. It no longer runs to EOF: the statistics section
+		// may follow it.
+		const uint64_t offset = this->CheckpointArchiveOffset;
+		const uint32_t size = this->CheckpointArchiveSize;
+		LARGE_INTEGER fileSize {};
+		if (size == 0 || size > MaxCheckpointArchiveBytes || offset <= this->PlaybackStreamOffset
+			|| !GetFileSizeEx(this->Handle, &fileSize)
+			|| offset > static_cast<uint64_t>(fileSize.QuadPart)
+			|| size > static_cast<uint64_t>(fileSize.QuadPart) - offset)
+		{
+			return false;
+		}
+
+		// The frame decompressor carries on from wherever it left the handle.
+		LARGE_INTEGER zero {}, original {};
+		if (!SetFilePointerEx(this->Handle, zero, &original, FILE_CURRENT))
+			return false;
+
+		LARGE_INTEGER archiveStart {};
+		archiveStart.QuadPart = static_cast<LONGLONG>(offset);
+		bytes.resize(size);
+		const bool ok = SetFilePointerEx(this->Handle, archiveStart, nullptr, FILE_BEGIN)
+			&& ReadRawFromHandle(this->Handle, bytes.data(), bytes.size());
+
+		const bool restored = SetFilePointerEx(this->Handle, original, nullptr, FILE_BEGIN) != FALSE;
+		if (!ok || !restored)
+			bytes.clear();
+
+		return ok && restored;
+	}
+
+	bool File::StampCleanShutdown(int lastWrittenFrame)
+	{
+		if (this->Handle == INVALID_HANDLE_VALUE)
+			return false;
+
+		static_assert(offsetof(ReplayHeader, Flags) == offsetof(ReplayHeader, TotalFrames) + sizeof(uint32_t),
+			"TotalFrames and Flags are stamped in one write and have to stay adjacent");
+
+		const LONG headerOffset = static_cast<LONG>(offsetof(ReplayHeader, TotalFrames));
+		if (SetFilePointer(this->Handle, headerOffset, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
+			return false;
+
+		const uint32_t tail[2] = {
+			static_cast<uint32_t>(std::max(0, lastWrittenFrame)),
+			ReplayHeaderFlag_CleanShutdown
+		};
+
+		DWORD bytesWritten = 0;
+		const bool ok = WriteFile(this->Handle, tail, sizeof(tail), &bytesWritten, nullptr) != FALSE
+			&& bytesWritten == sizeof(tail);
+
+		SetFilePointer(this->Handle, 0, nullptr, FILE_END);
+		return ok;
+	}
+}
